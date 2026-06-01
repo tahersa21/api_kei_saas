@@ -1113,14 +1113,14 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
   const fetchModels = async () => {
     const activeKeys = loadPoolKeys(provider.slug).filter(k => k.isActive);
     const keysToTry = activeKeys.length > 0
-      ? activeKeys.map(k => ({ id: k.id, label: k.label, key: k.key }))
-      : [{ id: "__no-key__", label: "بدون مفتاح", key: "" }];
+      ? activeKeys.map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl }))
+      : [{ id: "__no-key__", label: "بدون مفتاح", key: "", baseUrl: undefined as string | undefined }];
     setFetchingModels(true); setKeyModels([]);
     const results = await Promise.all(
       keysToTry.map(k =>
         apiFetch("/api/admin/provider-models", {
           method: "POST",
-          body: JSON.stringify({ baseUrl: provider.baseUrl, apiKey: k.key || undefined }),
+          body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key || undefined }),
         }).then(async res => {
           if (!res.ok) {
             const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
@@ -1437,12 +1437,12 @@ function RoutingProviderRow({
       } else if (entry.providerType === "custom" && entry.providerId) {
         const provider = customProviders.find(p => p.slug === entry.providerId);
         if (provider) {
-          let activeKeys: { id: string; label: string; key: string }[] = [];
+          let activeKeys: { id: string; label: string; key: string; baseUrl?: string }[] = [];
           try {
             const raw = localStorage.getItem(`provider_keys_${provider.slug}`);
             if (raw) {
-              const poolKeys = JSON.parse(raw) as Array<{ id: string; label: string; key: string; isActive: boolean }>;
-              activeKeys = poolKeys.filter(k => k.isActive).map(k => ({ id: k.id, label: k.label, key: k.key }));
+              const poolKeys = JSON.parse(raw) as Array<{ id: string; label: string; key: string; isActive: boolean; baseUrl?: string }>;
+              activeKeys = poolKeys.filter(k => k.isActive).map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl }));
             }
           } catch {}
           if (activeKeys.length === 0) {
@@ -1457,7 +1457,7 @@ function RoutingProviderRow({
                 fetch("/api/admin/provider-models", {
                   method: "POST",
                   headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
-                  body: JSON.stringify({ baseUrl: provider.baseUrl, apiKey: k.key }),
+                  body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key }),
                 }).then(async res => {
                   if (!res.ok) {
                     const d = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
