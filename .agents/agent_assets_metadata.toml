@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "tFfkwf8MejTr2kY1VPgYJ"
+uri = "file://docs/custom-providers.md"
+type = "text"
+title = "Custom Providers — دليل الإعداد الشامل"
