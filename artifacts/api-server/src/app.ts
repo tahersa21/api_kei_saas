@@ -1,6 +1,9 @@
 import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
@@ -26,9 +29,22 @@ app.use(
   }),
 );
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "25mb" }));
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
 app.use("/api", router);
+
+// Serve frontend static files in production (Docker / Cloud Run).
+// The public/ directory sits next to dist/ in the container.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const publicDir = join(__dirname, "..", "public");
+
+if (existsSync(publicDir)) {
+  app.use(express.static(publicDir));
+  app.get("*", (_req, res) => {
+    res.sendFile(join(publicDir, "index.html"));
+  });
+  logger.info({ publicDir }, "Serving frontend static files");
+}
 
 export default app;
