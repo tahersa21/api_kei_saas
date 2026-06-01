@@ -1018,7 +1018,7 @@ function TestChatPanel() {
 type FetchedModel = { id: string; owned_by?: string };
 
 // ─── Pool key stored in localStorage ─────────────────────────────────────────
-type PoolKeyApiType = "auto" | "openai" | "codex" | "anthropic";
+type PoolKeyApiType = "auto" | "openai" | "codex" | "anthropic" | "gemini";
 type PoolKey = { id: string; label: string; key: string; isActive: boolean; apiType?: PoolKeyApiType; baseUrl?: string };
 
 const API_TYPE_LABELS: Record<PoolKeyApiType, string> = {
@@ -1026,12 +1026,14 @@ const API_TYPE_LABELS: Record<PoolKeyApiType, string> = {
   openai: "OpenAI",
   codex: "Codex",
   anthropic: "Anthropic",
+  gemini: "Gemini",
 };
 const API_TYPE_COLORS: Record<PoolKeyApiType, string> = {
   auto: "bg-violet-500/10 text-violet-400",
   openai: "bg-emerald-500/10 text-emerald-400",
   codex: "bg-blue-500/10 text-blue-400",
   anthropic: "bg-amber-500/10 text-amber-400",
+  gemini: "bg-sky-500/10 text-sky-400",
 };
 
 function loadPoolKeys(slug: string): PoolKey[] {
@@ -1195,6 +1197,7 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
                 <option value="openai">OpenAI Completions (/v1/chat/completions)</option>
                 <option value="codex">Codex Responses (/v1/responses)</option>
                 <option value="anthropic">Anthropic Messages (/v1/messages)</option>
+                <option value="gemini">Gemini Native (/v1beta/models/…:streamGenerateContent)</option>
               </select>
             </div>
             {/* Custom base URL override */}

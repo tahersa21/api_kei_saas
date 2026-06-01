@@ -344,6 +344,7 @@ const MODEL_ENDPOINT_CANDIDATES = [
   "/api/v1/models",    // some self-hosted setups
   "/api/models",       // alternate style
   "/v1/models/list",   // rare but seen in some providers
+  "/v1beta/models",    // Gemini-compatible APIs (AiGoCode, code.newcli.com, right.codes/gemini)
 ];
 
 // Paths tried on parent URL segments (for sub-channel providers like right.codes/codex → right.codes)

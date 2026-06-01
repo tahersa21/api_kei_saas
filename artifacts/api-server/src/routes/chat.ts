@@ -1037,11 +1037,11 @@ router.post("/chat/stream", async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 // CUSTOM PROVIDER STREAM  — POST /chat/custom-stream
 // Accepts: { baseUrl, apiKey, apiType, model, messages, system }
-// apiType: "auto" | "openai" | "codex" | "anthropic"
-// When "auto": tries openai → codex → anthropic until one succeeds.
+// apiType: "auto" | "openai" | "codex" | "anthropic" | "gemini"
+// When "auto": tries openai → codex → anthropic until one succeeds (gemini requires explicit selection).
 // ════════════════════════════════════════════════════════════════════════════
 
-type CustomApiType = "openai" | "codex" | "anthropic";
+type CustomApiType = "openai" | "codex" | "anthropic" | "gemini";
 
 type CustomWireMessage = { role: string; content: string };
 
@@ -1079,20 +1079,46 @@ function buildCustomUpstream(
     };
   }
 
-  // anthropic
+  if (type === "anthropic") {
+    return {
+      url: `${base}/v1/messages`,
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+      },
+      body: {
+        model,
+        messages,
+        system: systemMsg || undefined,
+        max_tokens: 16384,
+        stream: true,
+      },
+    };
+  }
+
+  // gemini — native Gemini API format
+  // Supports both proxy (Bearer) and direct Google-compatible (?key=) auth
+  const geminiContents = messages.map(m => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  // Build URL: include ?key= for direct providers (AiGoCode, Google-compatible)
+  // Also send Bearer header for proxy providers (right.codes/gemini, code.newcli.com/gemini)
+  const keyParam = apiKey ? `?key=${encodeURIComponent(apiKey)}&alt=sse` : "?alt=sse";
+  const geminiUrl = `${base}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent${keyParam}`;
+
   return {
-    url: `${base}/v1/messages`,
+    url: geminiUrl,
     headers: {
       "Content-Type": "application/json",
-      "anthropic-version": "2023-06-01",
-      ...(apiKey ? { "x-api-key": apiKey } : {}),
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     },
     body: {
-      model,
-      messages,
-      system: systemMsg || undefined,
-      max_tokens: 16384,
-      stream: true,
+      contents: geminiContents,
+      ...(systemMsg ? { systemInstruction: { parts: [{ text: systemMsg }] } } : {}),
+      generationConfig: { maxOutputTokens: 8192 },
     },
   };
 }
@@ -1131,11 +1157,23 @@ function parseCustomChunk(
       return null;
     }
 
-    // anthropic
-    if (lastEvent === "content_block_delta") {
-      const delta = chunk.delta as { type?: string; text?: string } | undefined;
-      if (delta?.type === "text_delta" && delta.text) return delta.text;
+    if (type === "anthropic") {
+      if (lastEvent === "content_block_delta") {
+        const delta = chunk.delta as { type?: string; text?: string } | undefined;
+        if (delta?.type === "text_delta" && delta.text) return delta.text;
+      }
+      return null;
     }
+
+    // gemini — candidates[0].content.parts[0].text
+    if (type === "gemini") {
+      type GeminiCandidate = { content?: { parts?: { text?: string }[] } };
+      const candidates = chunk.candidates as GeminiCandidate[] | undefined;
+      const text = candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) return text;
+      return null;
+    }
+
     return null;
   } catch {
     return null;
