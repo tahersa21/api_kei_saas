@@ -1019,7 +1019,7 @@ type FetchedModel = { id: string; owned_by?: string };
 
 // ─── Pool key stored in localStorage ─────────────────────────────────────────
 type PoolKeyApiType = "auto" | "openai" | "codex" | "anthropic";
-type PoolKey = { id: string; label: string; key: string; isActive: boolean; apiType?: PoolKeyApiType };
+type PoolKey = { id: string; label: string; key: string; isActive: boolean; apiType?: PoolKeyApiType; baseUrl?: string };
 
 const API_TYPE_LABELS: Record<PoolKeyApiType, string> = {
   auto: "Auto",
@@ -1070,6 +1070,7 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
   const [formLabel, setFormLabel] = useState("");
   const [formKey, setFormKey] = useState("");
   const [formApiType, setFormApiType] = useState<PoolKeyApiType>("auto");
+  const [formBaseUrl, setFormBaseUrl] = useState("");
   const [showFormKey, setShowFormKey] = useState(false);
   const [copiedKeyId, setCopiedKeyId] = useState("");
 
@@ -1078,8 +1079,16 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
   const addKey = () => {
     if (!formKey.trim()) return;
     const label = formLabel.trim() || `Key ${keys.length + 1}`;
-    persist([...keys, { id: crypto.randomUUID(), label, key: formKey.trim(), isActive: true, apiType: formApiType }]);
-    setFormLabel(""); setFormKey(""); setFormApiType("auto"); setShowForm(false); setShowFormKey(false);
+    const trimmedBaseUrl = formBaseUrl.trim();
+    persist([...keys, {
+      id: crypto.randomUUID(),
+      label,
+      key: formKey.trim(),
+      isActive: true,
+      apiType: formApiType,
+      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
+    }]);
+    setFormLabel(""); setFormKey(""); setFormApiType("auto"); setFormBaseUrl(""); setShowForm(false); setShowFormKey(false);
   };
 
   const delKey = (id: string) => persist(keys.filter(k => k.id !== id));
@@ -1188,9 +1197,20 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
                 <option value="anthropic">Anthropic Messages (/v1/messages)</option>
               </select>
             </div>
+            {/* Custom base URL override */}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground/50 font-sans w-24 flex-none leading-tight">رابط مخصص<br/><span className="text-muted-foreground/30">(اختياري)</span></span>
+              <Input
+                value={formBaseUrl}
+                onChange={e => setFormBaseUrl(e.target.value)}
+                className="flex-1 h-7 text-xs font-mono bg-background/50"
+                placeholder={`${provider.baseUrl} (افتراضي)`}
+                dir="ltr"
+              />
+            </div>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" className="h-7 text-xs"
-                onClick={() => { setShowForm(false); setFormLabel(""); setFormKey(""); setFormApiType("auto"); setShowFormKey(false); }}>
+                onClick={() => { setShowForm(false); setFormLabel(""); setFormKey(""); setFormApiType("auto"); setFormBaseUrl(""); setShowFormKey(false); }}>
                 إلغاء
               </Button>
               <Button size="sm" className="h-7 px-3 text-xs" onClick={addKey} disabled={!formKey.trim()}>
@@ -1224,6 +1244,11 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
                     )}
                   </div>
                   <code className="text-[10px] text-muted-foreground/50 font-mono">{maskKey(k.key)}</code>
+                  {k.baseUrl && (
+                    <code className="text-[9px] text-sky-400/50 font-mono truncate block max-w-[220px]" dir="ltr" title={k.baseUrl}>
+                      ↳ {k.baseUrl.replace(/^https?:\/\//, "")}
+                    </code>
+                  )}
                 </div>
                 <div className="flex items-center gap-0.5 flex-none">
                   <button onClick={() => copyKey(k.id, k.key)}
