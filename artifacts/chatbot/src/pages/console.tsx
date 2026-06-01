@@ -1337,6 +1337,7 @@ function RoutingProviderRow({
   onRemove: () => void; onMoveUp: () => void; onMoveDown: () => void;
 }) {
   const [browsedModels, setBrowsedModels] = useState<string[]>([]);
+  const [browsedModelGroups, setBrowsedModelGroups] = useState<{ keyLabel: string; models: string[]; error?: string }[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [browseError, setBrowseError] = useState("");
@@ -1353,7 +1354,7 @@ function RoutingProviderRow({
   }, [showPicker]);
 
   const browseModels = async () => {
-    setFetchingModels(true); setBrowseError(""); setBrowsedModels([]); setShowPicker(false);
+    setFetchingModels(true); setBrowseError(""); setBrowsedModels([]); setBrowsedModelGroups([]); setShowPicker(false);
     try {
       let ids: string[] = [];
       if (entry.providerType === "cc") {
@@ -1369,7 +1370,7 @@ function RoutingProviderRow({
           ids = d.models.map(m => m.id);
         }
       } else if (entry.providerType === "ag") {
-        const agKey = localStorage.getItem("aigocode_key") ?? "";
+        const agKey = localStorage.getItem("aigocode_api_key") ?? "";
         const r = await fetch("/api/chat/ag-models", { headers: { "X-Aigocode-Key": agKey } });
         if (r.ok) {
           const d = await r.json() as { models: { id: string }[] };
@@ -1380,30 +1381,47 @@ function RoutingProviderRow({
       } else if (entry.providerType === "custom" && entry.providerId) {
         const provider = customProviders.find(p => p.slug === entry.providerId);
         if (provider) {
-          let apiKey = "";
+          let activeKeys: { id: string; label: string; key: string }[] = [];
           try {
             const raw = localStorage.getItem(`provider_keys_${provider.slug}`);
             if (raw) {
-              const keys = JSON.parse(raw) as Array<{ key: string; isActive: boolean }>;
-              apiKey = keys.find(k => k.isActive)?.key ?? "";
+              const poolKeys = JSON.parse(raw) as Array<{ id: string; label: string; key: string; isActive: boolean }>;
+              activeKeys = poolKeys.filter(k => k.isActive).map(k => ({ id: k.id, label: k.label, key: k.key }));
             }
           } catch {}
-          if (!apiKey) apiKey = localStorage.getItem(`provider_key_${provider.slug}`) ?? "";
-          const r = await fetch("/api/admin/provider-models", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
-            body: JSON.stringify({ baseUrl: provider.baseUrl, apiKey }),
-          });
-          if (r.ok) {
-            const d = await r.json() as { models: { id: string }[] };
-            ids = d.models.map(m => m.id);
+          if (activeKeys.length === 0) {
+            const legacy = localStorage.getItem(`provider_key_${provider.slug}`) ?? "";
+            if (legacy) activeKeys = [{ id: "__legacy__", label: provider.name, key: legacy }];
+          }
+          if (activeKeys.length === 0) {
+            setBrowseError("Add keys for this provider first");
           } else {
-            const d = await r.json() as { error?: string };
-            setBrowseError(d.error?.slice(0, 80) ?? "Failed to fetch models");
+            const results = await Promise.all(
+              activeKeys.map(k =>
+                fetch("/api/admin/provider-models", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+                  body: JSON.stringify({ baseUrl: provider.baseUrl, apiKey: k.key }),
+                }).then(async res => {
+                  if (!res.ok) {
+                    const d = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+                    return { keyLabel: k.label, models: [] as string[], error: d.error?.slice(0, 80) ?? `HTTP ${res.status}` };
+                  }
+                  const d = await res.json() as { models: { id: string }[] };
+                  return { keyLabel: k.label, models: (d.models ?? []).map(m => m.id).sort() };
+                }).catch((e: unknown) => ({ keyLabel: k.label, models: [] as string[], error: String(e).slice(0, 80) }))
+              )
+            );
+            setBrowsedModelGroups(results);
+            const totalCount = results.reduce((n, g) => n + g.models.length, 0);
+            if (totalCount > 0) setShowPicker(true);
+            else setBrowseError("No models found");
           }
         } else {
           setBrowseError("Select a provider first");
         }
+        setFetchingModels(false);
+        return;
       }
       setBrowsedModels(ids);
       if (ids.length > 0) setShowPicker(true);
@@ -1484,21 +1502,45 @@ function RoutingProviderRow({
             </button>
 
             {/* Model picker */}
-            {showPicker && browsedModels.length > 0 && (
+            {showPicker && (browsedModels.length > 0 || browsedModelGroups.length > 0) && (
               <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-52 overflow-y-auto rounded-lg border border-border/50 bg-card shadow-xl">
-                <div className="px-2 py-1 border-b border-border/20 flex items-center justify-between">
-                  <span className="text-[9px] text-muted-foreground/40 font-sans">{browsedModels.length} models</span>
+                <div className="px-2 py-1 border-b border-border/20 flex items-center justify-between sticky top-0 bg-card z-10">
+                  <span className="text-[9px] text-muted-foreground/40 font-sans">
+                    {browsedModelGroups.length > 0
+                      ? `${browsedModelGroups.reduce((n, g) => n + g.models.length, 0)} models · ${browsedModelGroups.length} keys`
+                      : `${browsedModels.length} models`}
+                  </span>
                   <button onClick={() => setShowPicker(false)} className="text-muted-foreground/30 hover:text-foreground">
                     <X className="w-3 h-3" />
                   </button>
                 </div>
-                {browsedModels.map(m => (
-                  <button key={m}
-                    className="w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-primary/10 hover:text-primary transition-colors truncate"
-                    onClick={() => { onChange({ ...entry, modelId: m }); setShowPicker(false); }}>
-                    {m}
-                  </button>
-                ))}
+                {browsedModelGroups.length > 0 ? (
+                  browsedModelGroups.map((group, gi) => (
+                    <div key={gi}>
+                      <div className="px-3 py-1 text-[9px] uppercase tracking-wider text-muted-foreground/40 font-sans bg-muted/10 border-b border-border/10 flex items-center justify-between">
+                        <span>{group.keyLabel}</span>
+                        {group.error
+                          ? <span className="text-destructive/60">{group.error}</span>
+                          : <span>{group.models.length} models</span>}
+                      </div>
+                      {group.models.map(m => (
+                        <button key={m}
+                          className="w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-primary/10 hover:text-primary transition-colors truncate"
+                          onClick={() => { onChange({ ...entry, modelId: m }); setShowPicker(false); }}>
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  ))
+                ) : (
+                  browsedModels.map(m => (
+                    <button key={m}
+                      className="w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-primary/10 hover:text-primary transition-colors truncate"
+                      onClick={() => { onChange({ ...entry, modelId: m }); setShowPicker(false); }}>
+                      {m}
+                    </button>
+                  ))
+                )}
               </div>
             )}
 
