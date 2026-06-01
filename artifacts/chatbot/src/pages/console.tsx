@@ -1115,14 +1115,14 @@ function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
   const fetchModels = async () => {
     const activeKeys = loadPoolKeys(provider.slug).filter(k => k.isActive);
     const keysToTry = activeKeys.length > 0
-      ? activeKeys.map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl }))
-      : [{ id: "__no-key__", label: "بدون مفتاح", key: "", baseUrl: undefined as string | undefined }];
+      ? activeKeys.map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl, apiType: k.apiType }))
+      : [{ id: "__no-key__", label: "بدون مفتاح", key: "", baseUrl: undefined as string | undefined, apiType: undefined as string | undefined }];
     setFetchingModels(true); setKeyModels([]);
     const results = await Promise.all(
       keysToTry.map(k =>
         apiFetch("/api/admin/provider-models", {
           method: "POST",
-          body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key || undefined }),
+          body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key || undefined, apiType: k.apiType }),
         }).then(async res => {
           if (!res.ok) {
             const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };

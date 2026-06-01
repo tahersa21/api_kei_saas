@@ -352,23 +352,42 @@ const MODEL_PARENT_CANDIDATES = ["/models/public", "/v1/models", "/models"];
 
 type ModelEntry = { id: string; owned_by?: string };
 
+/** Parse a models list response — handles OpenAI, raw array, and Gemini native formats. */
+function parseModelsResponse(parsed: unknown): ModelEntry[] | null {
+  if (Array.isArray(parsed)) return parsed as ModelEntry[];
+
+  const obj = parsed as Record<string, unknown>;
+
+  // OpenAI format: { data: [{id, ...}] }
+  if (Array.isArray(obj.data)) return obj.data as ModelEntry[];
+
+  // Gemini native format: { models: [{name: "models/gemini-3.1-pro", displayName: "..."}] }
+  if (Array.isArray(obj.models)) {
+    return (obj.models as { name?: string; displayName?: string }[]).map(m => ({
+      id: (m.name ?? "").replace(/^models\//, ""),
+      owned_by: "google",
+    })).filter(m => m.id.length > 0);
+  }
+
+  return null;
+}
+
 async function tryFetchModels(
   base: string,
   path: string,
   headers: Record<string, string>,
+  queryParams?: string,
 ): Promise<ModelEntry[] | null> {
   try {
-    const r = await fetch(`${base}${path}`, { headers, signal: AbortSignal.timeout(8_000) });
+    const url = queryParams ? `${base}${path}?${queryParams}` : `${base}${path}`;
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(8_000) });
     if (!r.ok) return null;
     const ct = r.headers.get("content-type") ?? "";
     const text = await r.text();
     if (ct.includes("text/html") || text.trimStart().startsWith("<")) return null;
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch { return null; }
-    if (Array.isArray(parsed)) return parsed as ModelEntry[];
-    const d = (parsed as { data?: ModelEntry[] }).data;
-    if (Array.isArray(d)) return d;
-    return null;
+    return parseModelsResponse(parsed);
   } catch {
     return null;
   }
@@ -393,18 +412,43 @@ function getParentBases(baseUrl: string): string[] {
 }
 
 router.post("/admin/provider-models", async (req, res) => {
-  const { baseUrl, apiKey } = req.body as { baseUrl?: string; apiKey?: string };
+  const { baseUrl, apiKey, apiType } = req.body as {
+    baseUrl?: string;
+    apiKey?: string;
+    apiType?: string;
+  };
   if (!baseUrl) {
     res.status(400).json({ error: "baseUrl is required" });
     return;
   }
   const base = baseUrl.replace(/\/$/, "");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  const bearerHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) bearerHeaders["Authorization"] = `Bearer ${apiKey}`;
+
+  // For Gemini-type keys we also pass ?key= as a query param (Google-compatible providers)
+  const geminiKeyParam = apiKey ? `key=${encodeURIComponent(apiKey)}` : undefined;
+
+  // Helper that tries both auth methods for a given path (bearer + ?key= when relevant)
+  const tryPath = async (b: string, path: string): Promise<ModelEntry[] | null> => {
+    // First: standard bearer header
+    const result = await tryFetchModels(b, path, bearerHeaders);
+    if (result !== null) return result;
+    // Second: Gemini ?key= param (only for /v1beta/models or explicit gemini type)
+    if (geminiKeyParam && (path === "/v1beta/models" || apiType === "gemini")) {
+      return tryFetchModels(b, path, { "Content-Type": "application/json" }, geminiKeyParam);
+    }
+    return null;
+  };
+
+  // When apiType is gemini, prioritise /v1beta/models first before the full candidate list
+  const candidates =
+    apiType === "gemini"
+      ? ["/v1beta/models", ...MODEL_ENDPOINT_CANDIDATES.filter(p => p !== "/v1beta/models")]
+      : MODEL_ENDPOINT_CANDIDATES;
 
   // 1. Try all candidates at the given base URL
-  for (const path of MODEL_ENDPOINT_CANDIDATES) {
-    const list = await tryFetchModels(base, path, headers);
+  for (const path of candidates) {
+    const list = await tryPath(base, path);
     if (list !== null) {
       res.json({ models: list, detectedPath: path });
       return;
@@ -415,7 +459,7 @@ router.post("/admin/provider-models", async (req, res) => {
   const parents = getParentBases(base);
   for (const parentBase of parents) {
     for (const path of MODEL_PARENT_CANDIDATES) {
-      const list = await tryFetchModels(parentBase, path, headers);
+      const list = await tryPath(parentBase, path);
       if (list !== null) {
         res.json({ models: list, detectedPath: `[${parentBase}]${path}` });
         return;
@@ -425,7 +469,7 @@ router.post("/admin/provider-models", async (req, res) => {
 
   // Nothing worked — give a helpful message
   res.status(502).json({
-    error: `لم يتم العثور على نقطة نهاية للنماذج في ${base}. جُرِّبت المسارات التالية تلقائياً: ${MODEL_ENDPOINT_CANDIDATES.join(", ")}. تأكد من أن الرابط صحيح وأن المزود يدعم OpenAI-compatible API.`,
+    error: `لم يتم العثور على نقطة نهاية للنماذج في ${base}. جُرِّبت المسارات التالية تلقائياً: ${candidates.join(", ")}. تأكد من أن الرابط صحيح وأن المزود يدعم OpenAI-compatible API.`,
   });
 });
 
