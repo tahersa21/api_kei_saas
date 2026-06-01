@@ -1035,6 +1035,212 @@ router.post("/chat/stream", async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// OPENAI-COMPATIBLE ENDPOINTS  — /v1/chat/completions + /v1/models
+// Allows using the standard openai SDK with this server as base_url.
+// Auth: Authorization: Bearer sk-cc-<key>
+// Supports streaming and non-streaming. Only CC models (not rc:/ag: prefixed).
+// ════════════════════════════════════════════════════════════════════════════
+
+function resolveOssProviderStatic(modelId: string): string | null {
+  if (modelId.startsWith("deepseek/")) return "deepseek";
+  if (modelId.startsWith("google/")) return "google";
+  if (modelId.startsWith("stepfun/")) return "stepfun";
+  if (modelId.startsWith("claude-")) return "anthropic";
+  if (modelId.startsWith("gpt-")) return "openai";
+  if (modelId.startsWith("moonshotai/")) return "moonshotai";
+  if (modelId.startsWith("MiniMaxAI/")) return "MiniMaxAI";
+  if (modelId.startsWith("zai-org/")) return "zai-org";
+  if (modelId.startsWith("Qwen/")) return "Qwen";
+  return null;
+}
+
+// GET /v1/models — returns CC model list in OpenAI format
+router.get("/v1/models", async (req, res) => {
+  const authHeader = req.headers["authorization"] as string | undefined;
+  const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
+  if (!bearerKey?.startsWith("sk-cc-")) {
+    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } });
+    return;
+  }
+  const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, bearerKey)).limit(1);
+  if (!rows[0] || !rows[0].isActive) {
+    res.status(401).json({ error: { message: "Invalid or disabled API key", type: "invalid_request_error", code: "invalid_api_key" } });
+    return;
+  }
+  // Proxy CC models list
+  const resolvedKey = (await getNextCcKey())?.key ?? process.env.COMMANDCODE_API_KEY;
+  if (!resolvedKey) { res.status(503).json({ error: { message: "No CC keys configured", type: "server_error" } }); return; }
+  try {
+    const r = await fetch("https://api.commandcode.ai/provider/v1/models", {
+      headers: { Authorization: `Bearer ${resolvedKey}`, "x-command-code-version": COMMANDCODE_VERSION },
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await r.json() as { data?: { id: string }[] };
+    const models = (data.data ?? []).map((m) => ({ id: m.id, object: "model", created: 0, owned_by: "commandcode" }));
+    res.json({ object: "list", data: models });
+  } catch {
+    res.status(502).json({ error: { message: "Failed to fetch models", type: "server_error" } });
+  }
+});
+
+// POST /v1/chat/completions — OpenAI-compatible chat completions
+router.post("/v1/chat/completions", async (req, res) => {
+  const authHeader = req.headers["authorization"] as string | undefined;
+  const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
+
+  if (!bearerKey?.startsWith("sk-cc-")) {
+    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } });
+    return;
+  }
+
+  const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, bearerKey)).limit(1);
+  if (!rows[0]) { res.status(401).json({ error: { message: "Invalid API key", type: "invalid_request_error", code: "invalid_api_key" } }); return; }
+  if (!rows[0].isActive) { res.status(401).json({ error: { message: "API key is disabled", type: "invalid_request_error", code: "invalid_api_key" } }); return; }
+
+  const userKeyId = rows[0].id;
+  const poolKey = await getNextCcKey();
+  if (!poolKey) { res.status(503).json({ error: { message: "No active API keys in pool", type: "server_error" } }); return; }
+  const resolvedApiKey = poolKey.key;
+  const ccKeyId = poolKey.id;
+  const startTime = Date.now();
+
+  type OAIMessage = { role: string; content: string };
+  const { model, messages, stream = false } = req.body as {
+    model?: string;
+    messages?: OAIMessage[];
+    stream?: boolean;
+  };
+
+  if (!messages || !Array.isArray(messages)) {
+    res.status(400).json({ error: { message: "messages array is required", type: "invalid_request_error" } });
+    return;
+  }
+
+  // Extract system message from messages array (OpenAI convention)
+  const systemMsg = messages.find(m => m.role === "system")?.content ?? "You are a helpful AI assistant.";
+  const chatMessages = messages.filter(m => m.role !== "system");
+  const selectedModel = model ?? "zai-org/GLM-5";
+
+  const logRequest = (status: "ok" | "error", errorMsg?: string) => {
+    const elapsedMs = Date.now() - startTime;
+    Promise.all([
+      db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId, model: selectedModel, elapsedMs, status, errorMsg: errorMsg?.slice(0, 255) ?? null }),
+      db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)),
+      incrementCcKeyUsage(ccKeyId),
+    ]).catch(() => {});
+  };
+
+  const ossProvider = resolveOssProviderStatic(selectedModel);
+  const osName = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "win32" : "linux";
+
+  const upstreamHeaders: Record<string, string> = {
+    Authorization: `Bearer ${resolvedApiKey}`,
+    "Content-Type": "application/json",
+    "x-command-code-version": COMMANDCODE_VERSION,
+    "x-cli-environment": "production",
+    "x-project-slug": "chatbot-session",
+    "x-session-id": randomUUID(),
+    "User-Agent": "node-fetch",
+    ...(ossProvider ? { "x-oss-primary-provider": ossProvider } : {}),
+  };
+
+  const ccBody = {
+    config: {
+      workingDir: "/workspace",
+      date: new Date().toISOString().split("T")[0],
+      environment: `${osName}-${os.arch()}, Node.js v20.0.0`,
+      structure: [], isGitRepo: false, currentBranch: "main",
+      mainBranch: "main", gitStatus: "", recentCommits: [],
+    },
+    memory: "", taste: null, skills: null, permissionMode: "auto-accept",
+    params: { model: selectedModel, messages: chatMessages, tools: [], system: systemMsg, max_tokens: 64000, stream: true },
+  };
+
+  try {
+    const upstream = await fetch(COMMANDCODE_URL, { method: "POST", headers: upstreamHeaders, body: JSON.stringify(ccBody) });
+
+    if (!upstream.ok) {
+      const text = await upstream.text();
+      if ((upstream.status === 401 || upstream.status === 403) && ccKeyId) await markCcKeyInvalid(ccKeyId);
+      logRequest("error", text.slice(0, 255));
+      res.status(upstream.status).json({ error: { message: text.slice(0, 300), type: "api_error" } });
+      return;
+    }
+
+    if (!upstream.body) { logRequest("ok"); res.end(); return; }
+
+    const completionId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    const created = Math.floor(Date.now() / 1000);
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    let lineBuffer = "";
+    let fullText = "";
+
+    if (stream) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
+      res.flushHeaders();
+      const flush = () => (res as unknown as { flush?: () => void }).flush?.();
+
+      // Role delta
+      res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] })}\n\n`);
+      flush();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        lineBuffer += decoder.decode(value, { stream: true });
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const chunk = JSON.parse(trimmed) as { type?: string; text?: string };
+            if (chunk.type === "text-delta" && chunk.text) {
+              res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: { content: chunk.text }, finish_reason: null }] })}\n\n`);
+              flush();
+            }
+          } catch { /* skip */ }
+        }
+      }
+
+      res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      flush();
+      logRequest("ok");
+      res.end();
+    } else {
+      // Non-streaming: buffer full response
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        lineBuffer += decoder.decode(value, { stream: true });
+        const lines = lineBuffer.split("\n");
+        lineBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const chunk = JSON.parse(trimmed) as { type?: string; text?: string };
+            if (chunk.type === "text-delta" && chunk.text) fullText += chunk.text;
+          } catch { /* skip */ }
+        }
+      }
+      logRequest("ok");
+      res.json({ id: completionId, object: "chat.completion", created, model: selectedModel, choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } });
+    }
+  } catch (err) {
+    req.log.error({ err }, "Error proxying to CommandCode (OpenAI compat)");
+    logRequest("error", String(err));
+    if (!res.headersSent) res.status(500).json({ error: { message: "Internal server error", type: "server_error" } });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // CUSTOM PROVIDER STREAM  — POST /chat/custom-stream
 // Accepts: { baseUrl, apiKey, apiType, model, messages, system }
 // apiType: "auto" | "openai" | "codex" | "anthropic" | "gemini"

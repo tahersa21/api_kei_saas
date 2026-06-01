@@ -384,6 +384,180 @@ function ProvidersPanel({ isAdmin, onProvidersChange }: { isAdmin: boolean; onPr
   );
 }
 
+// ─── Integration Docs ─────────────────────────────────────────────────────────
+
+const DOC_TABS = ["Python", "JavaScript", "cURL", "Raw fetch"] as const;
+type DocTab = typeof DOC_TABS[number];
+
+function IntegrationDocs() {
+  const [tab, setTab] = useState<DocTab>("Python");
+  const [copied, setCopied] = useState(false);
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "https://your-domain.com";
+
+  const snippets: Record<DocTab, string> = {
+    Python: `from openai import OpenAI
+
+client = OpenAI(
+    api_key="sk-cc-YOUR_KEY",
+    base_url="${baseUrl}/api/v1",
+)
+
+# Streaming
+stream = client.chat.completions.create(
+    model="zai-org/GLM-5",
+    messages=[{"role": "user", "content": "مرحبا!"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+
+# Non-streaming
+response = client.chat.completions.create(
+    model="deepseek/deepseek-v3",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "ما هي عاصمة فرنسا؟"},
+    ],
+)
+print(response.choices[0].message.content)`,
+
+    JavaScript: `import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: "sk-cc-YOUR_KEY",
+  baseURL: "${baseUrl}/api/v1",
+});
+
+// Streaming
+const stream = await client.chat.completions.create({
+  model: "zai-org/GLM-5",
+  messages: [{ role: "user", content: "مرحبا!" }],
+  stream: true,
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}
+
+// Non-streaming
+const response = await client.chat.completions.create({
+  model: "deepseek/deepseek-v3",
+  messages: [
+    { role: "system", content: "You are a helpful assistant." },
+    { role: "user", content: "ما هي عاصمة فرنسا؟" },
+  ],
+});
+console.log(response.choices[0].message.content);`,
+
+    cURL: `# Non-streaming
+curl ${baseUrl}/api/v1/chat/completions \\
+  -H "Authorization: Bearer sk-cc-YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "zai-org/GLM-5",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "مرحبا!"}
+    ]
+  }'
+
+# Streaming
+curl ${baseUrl}/api/v1/chat/completions \\
+  -H "Authorization: Bearer sk-cc-YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  --no-buffer \\
+  -d '{
+    "model": "deepseek/deepseek-v3",
+    "messages": [{"role": "user", "content": "اشرح الذكاء الاصطناعي"}],
+    "stream": true
+  }'
+
+# List models
+curl ${baseUrl}/api/v1/models \\
+  -H "Authorization: Bearer sk-cc-YOUR_KEY"`,
+
+    "Raw fetch": `// Streaming with raw fetch (browser / Node.js)
+const response = await fetch("${baseUrl}/api/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer sk-cc-YOUR_KEY",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "zai-org/GLM-5",
+    messages: [{ role: "user", content: "مرحبا!" }],
+    stream: true,
+  }),
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const lines = decoder.decode(value).split("\\n");
+  for (const line of lines) {
+    if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+    const chunk = JSON.parse(line.slice(6));
+    const text = chunk.choices?.[0]?.delta?.content;
+    if (text) process.stdout.write(text);
+  }
+}`,
+  };
+
+  const copy = () => {
+    navigator.clipboard.writeText(snippets[tab]).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="rounded-lg border border-border/40 bg-card/20 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/30 bg-card/30">
+        <div>
+          <p className="text-[10px] text-primary/70 uppercase tracking-wider font-medium">طريقة الاتصال</p>
+          <p className="text-[10px] text-muted-foreground/60 font-sans mt-0.5">
+            Base URL: <code className="font-mono text-primary/70">{baseUrl}/api/v1</code>
+          </p>
+        </div>
+        <button onClick={copy}
+          className="flex items-center gap-1.5 text-[10px] px-2 py-1 rounded border border-border/40 bg-background/50 hover:bg-muted/30 text-muted-foreground hover:text-foreground transition-colors">
+          {copied ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-border/30 bg-background/20">
+        {DOC_TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-3 py-1.5 text-[11px] font-mono transition-colors ${
+              tab === t
+                ? "text-primary border-b-2 border-primary bg-primary/5"
+                : "text-muted-foreground/60 hover:text-muted-foreground"
+            }`}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Code */}
+      <pre className="p-4 text-[11px] font-mono text-muted-foreground/80 overflow-x-auto whitespace-pre leading-relaxed bg-background/10 max-h-64 overflow-y-auto">
+        {snippets[tab]}
+      </pre>
+
+      {/* Note */}
+      <div className="px-4 py-2 border-t border-border/20 bg-card/10">
+        <p className="text-[10px] text-muted-foreground/50 font-sans">
+          استبدل <code className="font-mono text-primary/60">sk-cc-YOUR_KEY</code> بمفتاحك الفعلي.
+          يدعم جميع نماذج CC — راجع قائمة النماذج في صفحة Test Chat.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── API Keys Panel ───────────────────────────────────────────────────────────
 
 function ApiKeysPanel({ isAdmin }: { isAdmin: boolean }) {
@@ -450,14 +624,8 @@ function ApiKeysPanel({ isAdmin }: { isAdmin: boolean }) {
         )}
       </div>
 
-      {/* Usage info */}
-      <div className="rounded-lg border border-border/30 bg-card/20 p-4 space-y-1">
-        <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">Integration</p>
-        <p className="text-xs font-sans text-muted-foreground">
-          Send the key as <code className="font-mono text-primary/80 bg-primary/5 px-1 rounded">X-Api-Key: sk-cc-...</code> header with each request to{" "}
-          <code className="font-mono text-primary/80 bg-primary/5 px-1 rounded">POST /api/chat/stream</code>
-        </p>
-      </div>
+      {/* Integration docs */}
+      <IntegrationDocs />
 
       {showForm && (
         <div className="border border-border/50 rounded-lg p-4 bg-card/50 space-y-3">
