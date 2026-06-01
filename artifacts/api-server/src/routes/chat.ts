@@ -1241,6 +1241,187 @@ router.post("/v1/chat/completions", async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// ANTHROPIC-COMPATIBLE ENDPOINT  — POST /v1/messages
+// Claude Code: ANTHROPIC_BASE_URL=https://domain/api  ANTHROPIC_API_KEY=sk-cc-*
+// Routes through RC /claude-aws key pool; passes request body through unchanged.
+// ════════════════════════════════════════════════════════════════════════════
+
+router.post("/v1/messages", async (req, res) => {
+  // Claude Code sends x-api-key; other clients may use Authorization: Bearer
+  const xApiKey = req.headers["x-api-key"] as string | undefined;
+  const authHeader = req.headers["authorization"] as string | undefined;
+  const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
+  const userKey = xApiKey || bearerKey;
+
+  if (!userKey?.startsWith("sk-cc-")) {
+    res.status(401).json({ type: "error", error: { type: "authentication_error", message: "API key required (sk-cc-...)" } });
+    return;
+  }
+  const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, userKey)).limit(1);
+  if (!rows[0] || !rows[0].isActive) {
+    res.status(401).json({ type: "error", error: { type: "authentication_error", message: "Invalid or disabled API key" } });
+    return;
+  }
+  const poolKey = await getNextRcKey();
+  if (!poolKey) {
+    res.status(503).json({ type: "error", error: { type: "overloaded_error", message: "No RC keys in pool — add Right Code keys in the Console to enable this endpoint." } });
+    return;
+  }
+
+  const startTime = Date.now();
+  const userKeyId = rows[0].id;
+  const body = req.body as Record<string, unknown>;
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${RC_BASE}/claude-aws/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": poolKey.key,
+        "anthropic-version": (req.headers["anthropic-version"] as string | undefined) ?? "2023-06-01",
+        ...(req.headers["anthropic-beta"] ? { "anthropic-beta": req.headers["anthropic-beta"] as string } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    res.status(502).json({ type: "error", error: { type: "api_error", message: String(err) } });
+    return;
+  }
+
+  const logAnthropicReq = (status: "ok" | "error") => {
+    const elapsedMs = Date.now() - startTime;
+    Promise.all([
+      db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId: null, model: String(body.model ?? "claude"), elapsedMs, status, errorMsg: null }),
+      db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)),
+      incrementRcKeyUsage(poolKey.id),
+    ]).catch(() => {});
+  };
+
+  if (!upstream.ok) {
+    const text = await upstream.text();
+    logAnthropicReq("error");
+    if (upstream.status === 401 || upstream.status === 403) markRcKeyInvalid(poolKey.id).catch(() => {});
+    res.status(upstream.status).set("Content-Type", "application/json").send(text);
+    return;
+  }
+
+  const ct = upstream.headers.get("content-type") ?? "application/json";
+  res.setHeader("Content-Type", ct);
+  if (ct.includes("text/event-stream")) {
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
+    res.flushHeaders();
+  }
+
+  if (!upstream.body) { logAnthropicReq("ok"); res.end(); return; }
+  const anthropicReader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await anthropicReader.read();
+      if (done) break;
+      res.write(value);
+    }
+    logAnthropicReq("ok");
+    res.end();
+  } catch (err) {
+    logAnthropicReq("error");
+    req.log.error({ err }, "Error streaming /v1/messages response");
+    if (!res.headersSent) res.status(500).json({ type: "error", error: { type: "api_error", message: "Stream error" } });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// OPENAI RESPONSES API ENDPOINT  — POST /v1/responses
+// Codex CLI: OPENAI_BASE_URL=https://domain/api  OPENAI_API_KEY=sk-cc-*
+// Routes through RC /codex key pool; passes request body through unchanged.
+// ════════════════════════════════════════════════════════════════════════════
+
+router.post("/v1/responses", async (req, res) => {
+  const authHeader = req.headers["authorization"] as string | undefined;
+  const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
+
+  if (!bearerKey?.startsWith("sk-cc-")) {
+    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } });
+    return;
+  }
+  const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, bearerKey)).limit(1);
+  if (!rows[0] || !rows[0].isActive) {
+    res.status(401).json({ error: { message: "Invalid or disabled API key", type: "invalid_request_error", code: "invalid_api_key" } });
+    return;
+  }
+  const poolKey = await getNextRcKey();
+  if (!poolKey) {
+    res.status(503).json({ error: { message: "No RC keys in pool — add Right Code keys in the Console to enable this endpoint.", type: "server_error" } });
+    return;
+  }
+
+  const startTime = Date.now();
+  const userKeyId = rows[0].id;
+  const body = req.body as Record<string, unknown>;
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${RC_BASE}/codex/v1/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${poolKey.key}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    res.status(502).json({ error: { message: String(err), type: "api_error" } });
+    return;
+  }
+
+  const logCodexReq = (status: "ok" | "error") => {
+    const elapsedMs = Date.now() - startTime;
+    Promise.all([
+      db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId: null, model: String(body.model ?? "codex"), elapsedMs, status, errorMsg: null }),
+      db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)),
+      incrementRcKeyUsage(poolKey.id),
+    ]).catch(() => {});
+  };
+
+  if (!upstream.ok) {
+    const text = await upstream.text();
+    logCodexReq("error");
+    if (upstream.status === 401 || upstream.status === 403) markRcKeyInvalid(poolKey.id).catch(() => {});
+    res.status(upstream.status).set("Content-Type", "application/json").send(text);
+    return;
+  }
+
+  const ctCodex = upstream.headers.get("content-type") ?? "application/json";
+  res.setHeader("Content-Type", ctCodex);
+  if (ctCodex.includes("text/event-stream")) {
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
+    res.flushHeaders();
+  }
+
+  if (!upstream.body) { logCodexReq("ok"); res.end(); return; }
+  const codexReader = upstream.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await codexReader.read();
+      if (done) break;
+      res.write(value);
+    }
+    logCodexReq("ok");
+    res.end();
+  } catch (err) {
+    logCodexReq("error");
+    req.log.error({ err }, "Error streaming /v1/responses response");
+    if (!res.headersSent) res.status(500).json({ error: { message: "Stream error", type: "api_error" } });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // CUSTOM PROVIDER STREAM  — POST /chat/custom-stream
 // Accepts: { baseUrl, apiKey, apiType, model, messages, system }
 // apiType: "auto" | "openai" | "codex" | "anthropic" | "gemini"

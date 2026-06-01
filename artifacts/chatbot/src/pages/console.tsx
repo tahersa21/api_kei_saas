@@ -386,7 +386,7 @@ function ProvidersPanel({ isAdmin, onProvidersChange }: { isAdmin: boolean; onPr
 
 // ─── Integration Docs ─────────────────────────────────────────────────────────
 
-const DOC_TABS = ["Python", "JavaScript", "cURL", "Raw fetch"] as const;
+const DOC_TABS = ["Python", "JavaScript", "Claude Code", "Codex CLI", "cURL"] as const;
 type DocTab = typeof DOC_TABS[number];
 
 function IntegrationDocs() {
@@ -448,61 +448,115 @@ const response = await client.chat.completions.create({
 });
 console.log(response.choices[0].message.content);`,
 
-    cURL: `# Non-streaming
+    "Claude Code": `# ─── Claude Code ───────────────────────────────────────────────────
+# يتصل بـ /api/v1/messages — يعمل عبر RC /claude-aws
+# يتطلب وجود RC keys في الـ pool (إدارتها من Console → RC Keys)
+
+# 1. تصدير المتغيرات (أو أضفها في ~/.bashrc / ~/.zshrc)
+export ANTHROPIC_BASE_URL="${baseUrl}/api"
+export ANTHROPIC_API_KEY="sk-cc-YOUR_KEY"
+
+# 2. تشغيل Claude Code (مثال مع --dangerously-skip-permissions)
+claude --dangerously-skip-permissions
+
+# ── أو استخدام SDK مباشرةً (Python) ──────────────────────────────
+import anthropic, os
+
+client = anthropic.Anthropic(
+    api_key="sk-cc-YOUR_KEY",
+    base_url="${baseUrl}/api",
+)
+
+message = client.messages.create(
+    model="claude-opus-4-5",
+    max_tokens=4096,
+    messages=[{"role": "user", "content": "مرحبا!"}],
+)
+print(message.content[0].text)
+
+# ── Streaming ─────────────────────────────────────────────────────
+with client.messages.stream(
+    model="claude-opus-4-5",
+    max_tokens=4096,
+    messages=[{"role": "user", "content": "اشرح الذكاء الاصطناعي"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)`,
+
+    "Codex CLI": `# ─── Codex CLI ─────────────────────────────────────────────────────
+# يتصل بـ /api/v1/responses — يعمل عبر RC /codex
+# يتطلب وجود RC keys في الـ pool (إدارتها من Console → RC Keys)
+
+# 1. تصدير المتغيرات
+export OPENAI_BASE_URL="${baseUrl}/api"
+export OPENAI_API_KEY="sk-cc-YOUR_KEY"
+
+# 2. تشغيل Codex CLI
+codex
+
+# ── أو OpenClaw (يستخدم /v1/responses أيضاً) ─────────────────────
+openclow --base-url "${baseUrl}/api" --api-key "sk-cc-YOUR_KEY"
+
+# ── أو استخدام SDK مباشرةً (JavaScript) ──────────────────────────
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: "sk-cc-YOUR_KEY",
+  baseURL: "${baseUrl}/api/v1",
+});
+
+// Codex Responses API format
+const response = await client.responses.create({
+  model: "codex-mini-latest",
+  input: [{ role: "user", content: "اكتب لي دالة Python تحسب Fibonacci" }],
+});
+console.log(response.output_text);
+
+// Streaming
+const stream = await client.responses.create({
+  model: "o4-mini",
+  input: "افحص هذا الكود وأصلح أي مشاكل",
+  stream: true,
+});
+for await (const event of stream) {
+  if (event.type === "response.output_text.delta") {
+    process.stdout.write(event.delta);
+  }
+}`,
+
+    cURL: `# ─── /v1/chat/completions (OpenAI format) ──────────────────────────
 curl ${baseUrl}/api/v1/chat/completions \\
   -H "Authorization: Bearer sk-cc-YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "zai-org/GLM-5",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "مرحبا!"}
-    ]
-  }'
-
-# Streaming
-curl ${baseUrl}/api/v1/chat/completions \\
-  -H "Authorization: Bearer sk-cc-YOUR_KEY" \\
-  -H "Content-Type: application/json" \\
-  --no-buffer \\
-  -d '{
-    "model": "deepseek/deepseek-v3",
-    "messages": [{"role": "user", "content": "اشرح الذكاء الاصطناعي"}],
+    "messages": [{"role": "user", "content": "مرحبا!"}],
     "stream": true
   }'
 
-# List models
+# ─── /v1/messages (Anthropic format — Claude Code) ──────────────────
+curl ${baseUrl}/api/v1/messages \\
+  -H "x-api-key: sk-cc-YOUR_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "claude-opus-4-5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "مرحبا!"}]
+  }'
+
+# ─── /v1/responses (Codex format — Codex CLI) ───────────────────────
+curl ${baseUrl}/api/v1/responses \\
+  -H "Authorization: Bearer sk-cc-YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "codex-mini-latest",
+    "input": [{"role": "user", "content": "اكتب hello world"}]
+  }'
+
+# ─── قائمة النماذج ──────────────────────────────────────────────────
 curl ${baseUrl}/api/v1/models \\
   -H "Authorization: Bearer sk-cc-YOUR_KEY"`,
-
-    "Raw fetch": `// Streaming with raw fetch (browser / Node.js)
-const response = await fetch("${baseUrl}/api/v1/chat/completions", {
-  method: "POST",
-  headers: {
-    "Authorization": "Bearer sk-cc-YOUR_KEY",
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    model: "zai-org/GLM-5",
-    messages: [{ role: "user", content: "مرحبا!" }],
-    stream: true,
-  }),
-});
-
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
-
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  const lines = decoder.decode(value).split("\\n");
-  for (const line of lines) {
-    if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
-    const chunk = JSON.parse(line.slice(6));
-    const text = chunk.choices?.[0]?.delta?.content;
-    if (text) process.stdout.write(text);
-  }
-}`,
   };
 
   const copy = () => {
