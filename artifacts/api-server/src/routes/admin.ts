@@ -346,6 +346,9 @@ const MODEL_ENDPOINT_CANDIDATES = [
   "/v1/models/list",   // rare but seen in some providers
 ];
 
+// Paths tried on parent URL segments (for sub-channel providers like right.codes/codex → right.codes)
+const MODEL_PARENT_CANDIDATES = ["/models/public", "/v1/models", "/models"];
+
 type ModelEntry = { id: string; owned_by?: string };
 
 async function tryFetchModels(
@@ -370,6 +373,24 @@ async function tryFetchModels(
   }
 }
 
+/** Returns parent base URLs by stripping path segments one at a time.
+ *  e.g. "https://right.codes/codex/v1" → ["https://right.codes/codex", "https://right.codes"] */
+function getParentBases(baseUrl: string): string[] {
+  try {
+    const url = new URL(baseUrl);
+    const segments = url.pathname.replace(/\/$/, "").split("/").filter(Boolean);
+    const parents: string[] = [];
+    while (segments.length > 0) {
+      segments.pop();
+      const path = segments.length > 0 ? `/${segments.join("/")}` : "";
+      parents.push(`${url.protocol}//${url.host}${path}`);
+    }
+    return parents;
+  } catch {
+    return [];
+  }
+}
+
 router.post("/admin/provider-models", async (req, res) => {
   const { baseUrl, apiKey } = req.body as { baseUrl?: string; apiKey?: string };
   if (!baseUrl) {
@@ -380,12 +401,24 @@ router.post("/admin/provider-models", async (req, res) => {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-  // Try all candidates; return first success
+  // 1. Try all candidates at the given base URL
   for (const path of MODEL_ENDPOINT_CANDIDATES) {
     const list = await tryFetchModels(base, path, headers);
     if (list !== null) {
       res.json({ models: list, detectedPath: path });
       return;
+    }
+  }
+
+  // 2. Fallback: try parent URL segments (handles sub-channel providers, e.g. right.codes/codex → right.codes)
+  const parents = getParentBases(base);
+  for (const parentBase of parents) {
+    for (const path of MODEL_PARENT_CANDIDATES) {
+      const list = await tryFetchModels(parentBase, path, headers);
+      if (list !== null) {
+        res.json({ models: list, detectedPath: `[${parentBase}]${path}` });
+        return;
+      }
     }
   }
 
