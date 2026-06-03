@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 
 type AdminAuthCtx = {
   token: string | null;
-  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
 };
 
@@ -12,12 +12,12 @@ const AdminAuthContext = createContext<AdminAuthCtx | null>(null);
 export function AdminAuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
 
-  const login = useCallback(async (email: string, password: string): Promise<{ ok: boolean; error?: string }> => {
+  const login = useCallback(async (password: string): Promise<{ ok: boolean; error?: string }> => {
     try {
       const res = await fetch("/api/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ password }),
       });
       const data = (await res.json()) as { token?: string; error?: string };
       if (!res.ok || !data.token) return { ok: false, error: data.error ?? "Login failed" };

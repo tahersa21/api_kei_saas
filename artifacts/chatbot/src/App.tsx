@@ -12,6 +12,7 @@ import NotFound from "@/pages/not-found";
 import Landing from "@/pages/landing";
 import Console from "@/pages/console";
 import Chat from "@/pages/chat";
+import UserDashboard from "@/pages/user-dashboard";
 import DashboardLogin from "@/pages/dashboard/login";
 import DashboardLayout from "@/pages/dashboard/layout";
 import DashboardOverview from "@/pages/dashboard/overview";
@@ -132,7 +133,7 @@ function HomeRedirect() {
   return (
     <>
       <Show when="signed-in">
-        <Redirect to="/console" />
+        <Redirect to="/app" />
       </Show>
       <Show when="signed-out">
         <Landing />
@@ -141,7 +142,20 @@ function HomeRedirect() {
   );
 }
 
-function ConsolePage() {
+function UserApp() {
+  return (
+    <>
+      <Show when="signed-in">
+        <UserDashboard />
+      </Show>
+      <Show when="signed-out">
+        <Redirect to="/sign-in" />
+      </Show>
+    </>
+  );
+}
+
+function AdminPage() {
   const { token } = useAdminAuth();
   if (!token) return <DashboardLogin />;
   return <Console />;
@@ -159,7 +173,8 @@ function Router() {
       <Route path="/" component={HomeRedirect} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
-      <Route path="/console" component={ConsolePage} />
+      <Route path="/app" component={UserApp} />
+      <Route path="/taherlt" component={AdminPage} />
       <Route path="/chat" component={Chat} />
       <Route path="/dashboard">
         {() => (
