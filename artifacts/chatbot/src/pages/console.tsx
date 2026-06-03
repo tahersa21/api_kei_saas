@@ -95,18 +95,19 @@ function AdminLockBanner({ onUnlock }: { onUnlock: () => void }) {
 
 function LoginDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const { login } = useAdminAuth();
+  const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
-    if (!pw) return;
+    if (!email || !pw) return;
     setLoading(true); setErr("");
-    const res = await login(pw);
+    const res = await login(email, pw);
     setLoading(false);
     if (res.ok) onSuccess();
-    else setErr(res.error ?? "Invalid password");
+    else setErr(res.error ?? "Invalid credentials");
   };
 
   return (
@@ -121,13 +122,22 @@ function LoginDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             <X className="w-4 h-4" />
           </button>
         </div>
+        <Input
+          type="email"
+          value={email} onChange={(e) => { setEmail(e.target.value); setErr(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          className="h-9 text-sm font-mono bg-background/60"
+          placeholder="Admin email" autoFocus
+          autoComplete="email"
+        />
         <div className="relative">
           <Input
             type={show ? "text" : "password"}
-            value={pw} onChange={(e) => setPw(e.target.value)}
+            value={pw} onChange={(e) => { setPw(e.target.value); setErr(""); }}
             onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
             className="h-9 text-sm font-mono pr-9 bg-background/60"
-            placeholder="Admin password" autoFocus
+            placeholder="Admin password"
+            autoComplete="current-password"
           />
           <button onClick={() => setShow(v => !v)}
             className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-muted-foreground">
@@ -135,7 +145,7 @@ function LoginDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
           </button>
         </div>
         {err && <p className="text-xs text-destructive font-sans">{err}</p>}
-        <Button className="w-full h-9" onClick={submit} disabled={loading}>
+        <Button className="w-full h-9" onClick={submit} disabled={loading || !email || !pw}>
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Unlock"}
         </Button>
       </div>

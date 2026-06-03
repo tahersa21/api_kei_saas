@@ -142,16 +142,9 @@ function HomeRedirect() {
 }
 
 function ConsolePage() {
-  return (
-    <>
-      <Show when="signed-in">
-        <Console />
-      </Show>
-      <Show when="signed-out">
-        <Redirect to="/" />
-      </Show>
-    </>
-  );
+  const { token } = useAdminAuth();
+  if (!token) return <DashboardLogin />;
+  return <Console />;
 }
 
 function DashboardGuard({ children }: { children: React.ReactNode }) {

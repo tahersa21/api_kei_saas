@@ -11,14 +11,23 @@ import { getAllRpmStats } from "../lib/rate-limiter";
 const router = Router();
 
 router.post("/admin/login", async (req, res) => {
-  const { password } = req.body as { password?: string };
+  const { email, password } = req.body as { email?: string; password?: string };
   const adminPassword = process.env.ADMIN_PASSWORD;
+  const adminEmail = process.env.ADMIN_EMAIL;
   if (!adminPassword) {
     res.status(500).json({ error: "ADMIN_PASSWORD environment variable is not set" });
     return;
   }
-  if (!password || password !== adminPassword) {
-    res.status(401).json({ error: "Invalid password" });
+  if (!adminEmail) {
+    res.status(500).json({ error: "ADMIN_EMAIL environment variable is not set" });
+    return;
+  }
+  if (!email || !password) {
+    res.status(401).json({ error: "Email and password are required" });
+    return;
+  }
+  if (email.toLowerCase().trim() !== adminEmail.toLowerCase().trim() || password !== adminPassword) {
+    res.status(401).json({ error: "Invalid email or password" });
     return;
   }
   res.json({ token: signAdminToken() });
