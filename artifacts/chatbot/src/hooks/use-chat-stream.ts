@@ -1,17 +1,21 @@
 import { useState, useRef, useCallback } from "react";
 import { getActiveApiKey } from "./use-api-keys";
 
-export type ImageAttachment = {
-  data: string;       // base64 without data-URL prefix
-  mimeType: string;   // e.g. "image/jpeg"
-  previewUrl: string; // data-URL for display
+export type FileAttachment = {
+  data: string;        // base64 without data-URL prefix
+  mimeType: string;    // e.g. "image/jpeg", "application/pdf", "text/plain"
+  name: string;        // original filename
+  previewUrl?: string; // data-URL — only set for images
 };
+
+// Backward-compat alias
+export type ImageAttachment = FileAttachment;
 
 export type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  images?: ImageAttachment[];
+  images?: FileAttachment[];
   reasoning?: string;
   timestamp: Date;
   elapsedMs?: number;
@@ -85,7 +89,7 @@ export function useChatStream() {
       model: string,
       systemPrompt: string,
       extraHeaders?: Record<string, string>,
-      images?: ImageAttachment[],
+      images?: FileAttachment[],
     ) => {
       if (!content.trim() && (!images || images.length === 0)) return;
 
@@ -132,7 +136,7 @@ export function useChatStream() {
           role: m.role,
           content: m.content,
           ...(m.images && m.images.length > 0
-            ? { images: m.images.map(({ data, mimeType }) => ({ data, mimeType })) }
+            ? { images: m.images.map(({ data, mimeType, name }) => ({ data, mimeType, name })) }
             : {}),
         }));
 

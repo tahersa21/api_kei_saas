@@ -22,7 +22,7 @@ import {
   Send, SquareSquare, Trash2, Terminal, ChevronDown, ChevronUp,
   Clock, Key, Eye, EyeOff, Plus, X, CheckCircle2, Paperclip, AlertTriangle, Sun, Moon,
 } from "lucide-react";
-import type { ImageAttachment } from "@/hooks/use-chat-stream";
+import type { FileAttachment } from "@/hooks/use-chat-stream";
 import { useTheme } from "@/context/theme";
 
 type Provider = "commandcode" | "rightcode" | "aigocode";
@@ -110,7 +110,7 @@ export default function Chat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
 
   // Switch provider and immediately reset model selection
   const switchProvider = (p: Provider) => {
@@ -149,7 +149,7 @@ export default function Chat() {
     });
   };
 
-  const compressImage = (file: File): Promise<ImageAttachment> =>
+  const compressImage = (file: File): Promise<FileAttachment> =>
     new Promise((resolve, reject) => {
       const MAX_PX = 1024;
       const QUALITY = 0.82;
@@ -169,38 +169,50 @@ export default function Chat() {
         ctx.drawImage(img, 0, 0, width, height);
         const dataUrl = canvas.toDataURL("image/jpeg", QUALITY);
         const base64 = dataUrl.split(",")[1];
-        resolve({ data: base64, mimeType: "image/jpeg", previewUrl: dataUrl });
+        resolve({ data: base64, mimeType: "image/jpeg", name: file.name, previewUrl: dataUrl });
       };
       img.onerror = reject;
       img.src = objectUrl;
     });
 
+  const readAsBase64 = (file: File): Promise<FileAttachment> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        const base64 = dataUrl.split(",")[1] ?? "";
+        resolve({ data: base64, mimeType: file.type, name: file.name });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const ACCEPTED_TYPES = ["image/", "application/pdf", "text/"];
+  const isAccepted = (file: File) => ACCEPTED_TYPES.some((t) => file.type.startsWith(t));
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
     files.forEach((file) => {
-      if (!file.type.startsWith("image/")) return;
-      compressImage(file)
-        .then((attachment) => setPendingImages((prev) => [...prev, attachment]))
-        .catch(() => {
-          const reader = new FileReader();
-          reader.onload = (ev) => {
-            const dataUrl = ev.target?.result as string;
-            setPendingImages((prev) => [...prev, { data: dataUrl.split(",")[1], mimeType: file.type, previewUrl: dataUrl }]);
-          };
-          reader.readAsDataURL(file);
-        });
+      if (!isAccepted(file)) return;
+      if (file.type.startsWith("image/")) {
+        compressImage(file)
+          .then((a) => setPendingFiles((prev) => [...prev, a]))
+          .catch(() => readAsBase64(file).then((a) => setPendingFiles((prev) => [...prev, a])));
+      } else {
+        readAsBase64(file).then((a) => setPendingFiles((prev) => [...prev, a]));
+      }
     });
   };
 
   const handleSend = () => {
-    if ((!input.trim() && pendingImages.length === 0) || isStreaming) return;
+    if ((!input.trim() && pendingFiles.length === 0) || isStreaming) return;
     const extraHeaders: Record<string, string> = {};
     if (isRcMode && rcKey) extraHeaders["X-Rightcode-Key"] = rcKey;
     if (isAgMode && agKey) extraHeaders["X-Aigocode-Key"] = agKey;
-    sendMessage(input, selectedModel, systemPrompt, extraHeaders, pendingImages.length > 0 ? pendingImages : undefined);
+    sendMessage(input, selectedModel, systemPrompt, extraHeaders, pendingFiles.length > 0 ? pendingFiles : undefined);
     setInput("");
-    setPendingImages([]);
+    setPendingFiles([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
@@ -666,17 +678,26 @@ export default function Chat() {
                     )}
                   </div>
 
-                  {/* Image attachments */}
+                  {/* File attachments */}
                   {msg.images && msg.images.length > 0 && (
                     <div className={`flex flex-wrap gap-2 max-w-[85%] ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                      {msg.images.map((img, i) => (
-                        <img
-                          key={i}
-                          src={img.previewUrl}
-                          alt="attachment"
-                          className="max-h-48 max-w-[240px] rounded-lg border border-border/40 object-contain bg-black/20"
-                        />
-                      ))}
+                      {msg.images.map((f, i) =>
+                        f.mimeType.startsWith("image/") ? (
+                          <img
+                            key={i}
+                            src={f.previewUrl}
+                            alt={f.name ?? "attachment"}
+                            className="max-h-48 max-w-[240px] rounded-lg border border-border/40 object-contain bg-black/20"
+                          />
+                        ) : (
+                          <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border/40 bg-muted/30 text-xs font-mono max-w-[240px]">
+                            <span className="text-lg leading-none select-none">
+                              {f.mimeType === "application/pdf" ? "📄" : "📝"}
+                            </span>
+                            <span className="truncate text-muted-foreground">{f.name ?? (f.mimeType === "application/pdf" ? "document.pdf" : "file.txt")}</span>
+                          </div>
+                        )
+                      )}
                     </div>
                   )}
 
@@ -729,21 +750,32 @@ export default function Chat() {
       <div className="flex-none p-4 bg-background border-t border-border/50">
         <div className="max-w-3xl mx-auto space-y-2">
 
-          {/* Pending image previews */}
-          {pendingImages.length > 0 && (
+          {/* Pending file previews */}
+          {pendingFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 px-1">
-              {pendingImages.map((img, i) => (
+              {pendingFiles.map((f, i) => (
                 <div key={i} className="relative group/img">
-                  <img
-                    src={img.previewUrl}
-                    alt="pending"
-                    className="h-16 w-16 object-cover rounded-md border border-border/50 bg-black/20"
-                  />
+                  {f.mimeType.startsWith("image/") && f.previewUrl ? (
+                    <img
+                      src={f.previewUrl}
+                      alt="pending"
+                      className="h-16 w-16 object-cover rounded-md border border-border/50 bg-black/20"
+                    />
+                  ) : (
+                    <div className="h-16 w-32 flex flex-col items-center justify-center gap-1 rounded-md border border-border/50 bg-muted/40 px-2">
+                      <span className="text-2xl leading-none select-none">
+                        {f.mimeType === "application/pdf" ? "📄" : "📝"}
+                      </span>
+                      <span className="text-[9px] text-muted-foreground truncate w-full text-center font-mono">
+                        {f.name ?? (f.mimeType === "application/pdf" ? "document.pdf" : "file.txt")}
+                      </span>
+                    </div>
+                  )}
                   <button
-                    onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                    onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
                     className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-destructive text-destructive-foreground
                       flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
-                    title="Remove image"
+                    title="Remove"
                   >
                     <X className="w-2.5 h-2.5" />
                   </button>
@@ -757,7 +789,7 @@ export default function Chat() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,application/pdf,text/plain,text/markdown,text/csv,text/html,text/xml"
               multiple
               className="hidden"
               onChange={handleFileSelect}
@@ -769,17 +801,17 @@ export default function Chat() {
                 ${isRcMode ? "focus-visible:ring-violet-500/60" : "focus-visible:ring-primary"}`}
               disabled={isStreaming} />
 
-            {/* Attach image button */}
+            {/* Attach file button */}
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming}
-              title="Attach image"
+              title="Attach file (images, PDF, text)"
               className={`absolute left-2 bottom-3 flex items-center justify-center w-7 h-7 rounded-md transition-colors
-                ${pendingImages.length > 0
+                ${pendingFiles.length > 0
                   ? (isRcMode ? "text-violet-400 bg-violet-500/10" : "text-primary bg-primary/10")
                   : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/30"}`}
             >
-              <Paperclip className={`w-4 h-4 ${pendingImages.length > 0 ? "rotate-45" : ""} transition-transform`} />
+              <Paperclip className={`w-4 h-4 ${pendingFiles.length > 0 ? "rotate-45" : ""} transition-transform`} />
             </button>
 
             <div className="absolute right-2 bottom-2 flex items-center gap-2">
@@ -788,7 +820,7 @@ export default function Chat() {
                   <SquareSquare className="w-4 h-4" />
                 </Button>
               ) : (
-                <Button onClick={handleSend} disabled={!input.trim() && pendingImages.length === 0} size="icon"
+                <Button onClick={handleSend} disabled={!input.trim() && pendingFiles.length === 0} size="icon"
                   className={`h-10 w-10 rounded-md text-white transition-all duration-200
                     ${isRcMode
                       ? "bg-violet-600 hover:bg-violet-500 group-focus-within:shadow-[0_0_15px_rgba(139,92,246,0.4)]"

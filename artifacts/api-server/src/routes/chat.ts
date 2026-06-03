@@ -395,8 +395,8 @@ router.post("/chat/stream", async (req, res) => {
     return;
   }
 
-  type WireImage = { data: string; mimeType: string };
-  type WireMessage = { role: string; content: string; images?: WireImage[] };
+  type WireFile = { data: string; mimeType: string; name?: string };
+  type WireMessage = { role: string; content: string; images?: WireFile[] };
 
   const { messages, model, system } = req.body as {
     messages: WireMessage[];
@@ -404,35 +404,76 @@ router.post("/chat/stream", async (req, res) => {
     system?: string;
   };
 
-  // ── Vision content builders ───────────────────────────────────────────────
-  function buildAnthropicContent(content: string, images?: WireImage[]) {
-    if (!images || images.length === 0) return content;
-    const parts: unknown[] = images.map((img) => ({
-      type: "image",
-      source: { type: "base64", media_type: img.mimeType, data: img.data },
-    }));
-    if (content) parts.push({ type: "text", text: content });
-    return parts;
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const isImage = (f: WireFile) => f.mimeType.startsWith("image/");
+  const isPdf   = (f: WireFile) => f.mimeType === "application/pdf";
+  const isText  = (f: WireFile) => f.mimeType.startsWith("text/");
+
+  /** Decode base64 → UTF-8 string (for text files). */
+  function b64toText(b64: string): string {
+    try { return Buffer.from(b64, "base64").toString("utf-8"); } catch { return ""; }
   }
 
-  function buildOpenAIContent(content: string, images?: WireImage[]) {
-    if (!images || images.length === 0) return content;
-    const parts: unknown[] = [
-      ...images.map((img) => ({
-        type: "image_url",
-        image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-      })),
-      ...(content ? [{ type: "text", text: content }] : []),
-    ];
-    return parts;
-  }
-
-  function buildGeminiParts(content: string, images?: WireImage[]) {
+  // ── Vision / document content builders ───────────────────────────────────
+  /**
+   * Anthropic supports:
+   *  - images  → type:"image"    source:{type:"base64", media_type, data}
+   *  - PDFs    → type:"document" source:{type:"base64", media_type:"application/pdf", data}
+   *  - text    → type:"text"     text:"<decoded content>"
+   */
+  function buildAnthropicContent(content: string, files?: WireFile[]) {
+    if (!files || files.length === 0) return content;
     const parts: unknown[] = [];
-    if (images && images.length > 0) {
-      parts.push(...images.map((img) => ({
-        inlineData: { mimeType: img.mimeType, data: img.data },
-      })));
+    for (const f of files) {
+      if (isImage(f)) {
+        parts.push({ type: "image", source: { type: "base64", media_type: f.mimeType, data: f.data } });
+      } else if (isPdf(f)) {
+        parts.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: f.data } });
+      } else if (isText(f)) {
+        const decoded = b64toText(f.data);
+        if (decoded) parts.push({ type: "text", text: `[File: ${f.name ?? "file.txt"}]\n${decoded}` });
+      }
+    }
+    if (content) parts.push({ type: "text", text: content });
+    return parts.length > 0 ? parts : content;
+  }
+
+  /**
+   * OpenAI supports images via image_url. PDFs are not natively supported —
+   * we inline PDF/text file content as a prefixed text block instead.
+   */
+  function buildOpenAIContent(content: string, files?: WireFile[]) {
+    if (!files || files.length === 0) return content;
+    const parts: unknown[] = [];
+    for (const f of files) {
+      if (isImage(f)) {
+        parts.push({ type: "image_url", image_url: { url: `data:${f.mimeType};base64,${f.data}` } });
+      } else if (isText(f)) {
+        const decoded = b64toText(f.data);
+        if (decoded) parts.push({ type: "text", text: `[File: ${f.name ?? "file.txt"}]\n${decoded}` });
+      } else if (isPdf(f)) {
+        // PDFs not supported by OpenAI — notify the model
+        parts.push({ type: "text", text: `[PDF attached: ${f.name ?? "document.pdf"} — this provider does not support PDF content directly]` });
+      }
+    }
+    if (content) parts.push({ type: "text", text: content });
+    return parts.length > 1 ? parts : content;
+  }
+
+  /**
+   * Gemini supports images and PDFs as inlineData. Text files are injected as text parts.
+   */
+  function buildGeminiParts(content: string, files?: WireFile[]) {
+    const parts: unknown[] = [];
+    if (files && files.length > 0) {
+      for (const f of files) {
+        if (isImage(f) || isPdf(f)) {
+          parts.push({ inlineData: { mimeType: f.mimeType, data: f.data } });
+        } else if (isText(f)) {
+          const decoded = b64toText(f.data);
+          if (decoded) parts.push({ text: `[File: ${f.name ?? "file.txt"}]\n${decoded}` });
+        }
+      }
     }
     if (content) parts.push({ text: content });
     return parts;
