@@ -8,6 +8,10 @@ export type RoutingProviderEntry = {
   modelId: string;
   rpmLimit: number;
   priority: number;
+  /** For custom providers: the actual API key to use (stored at rule-creation time) */
+  apiKey?: string;
+  /** For custom providers: optional base URL override (overrides provider default) */
+  apiBaseUrl?: string;
 };
 
 export const routingRulesTable = pgTable("routing_rules", {

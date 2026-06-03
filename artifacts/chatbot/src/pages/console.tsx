@@ -30,6 +30,10 @@ type RoutingProviderEntry = {
   modelId: string;
   rpmLimit: number;
   priority: number;
+  /** For custom providers: the actual key value stored in the rule */
+  apiKey?: string;
+  /** For custom providers: optional base URL override */
+  apiBaseUrl?: string;
 };
 
 type RoutingRule = {
@@ -1622,7 +1626,28 @@ function RoutingProviderRow({
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [browseError, setBrowseError] = useState("");
+  const [poolKeys, setPoolKeys] = useState<PoolKey[]>([]);
   const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Load provider pool keys from localStorage when custom provider changes
+  useEffect(() => {
+    if (entry.providerType !== "custom" || !entry.providerId) { setPoolKeys([]); return; }
+    try {
+      const raw = localStorage.getItem(`provider_keys_${entry.providerId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as PoolKey[];
+        setPoolKeys(parsed.filter(k => k.isActive));
+      } else {
+        const legacy = localStorage.getItem(`provider_key_${entry.providerId}`);
+        if (legacy) {
+          const provider = customProviders.find(p => p.slug === entry.providerId);
+          setPoolKeys([{ id: "__legacy__", label: provider?.name ?? entry.providerId ?? "Key", key: legacy, isActive: true }]);
+        } else {
+          setPoolKeys([]);
+        }
+      }
+    } catch { setPoolKeys([]); }
+  }, [entry.providerType, entry.providerId, customProviders]);
 
   useEffect(() => {
     if (!showPicker) return;
@@ -1662,42 +1687,37 @@ function RoutingProviderRow({
       } else if (entry.providerType === "custom" && entry.providerId) {
         const provider = customProviders.find(p => p.slug === entry.providerId);
         if (provider) {
-          let activeKeys: { id: string; label: string; key: string; baseUrl?: string }[] = [];
-          try {
-            const raw = localStorage.getItem(`provider_keys_${provider.slug}`);
-            if (raw) {
-              const poolKeys = JSON.parse(raw) as Array<{ id: string; label: string; key: string; isActive: boolean; baseUrl?: string }>;
-              activeKeys = poolKeys.filter(k => k.isActive).map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl }));
-            }
-          } catch {}
-          if (activeKeys.length === 0) {
-            const legacy = localStorage.getItem(`provider_key_${provider.slug}`) ?? "";
-            if (legacy) activeKeys = [{ id: "__legacy__", label: provider.name, key: legacy }];
+          // If a specific key is already selected, browse only that key
+          const keysToQuery: { id: string; label: string; key: string; baseUrl?: string }[] =
+            entry.apiKey
+              ? [{ id: "__selected__", label: poolKeys.find(k => k.key === entry.apiKey)?.label ?? "Selected Key", key: entry.apiKey, baseUrl: entry.apiBaseUrl }]
+              : poolKeys.map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl }));
+
+          if (keysToQuery.length === 0) {
+            setBrowseError("Add keys for this provider in Providers settings first");
+            setFetchingModels(false);
+            return;
           }
-          if (activeKeys.length === 0) {
-            setBrowseError("Add keys for this provider first");
-          } else {
-            const results = await Promise.all(
-              activeKeys.map(k =>
-                fetch("/api/admin/provider-models", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
-                  body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key }),
-                }).then(async res => {
-                  if (!res.ok) {
-                    const d = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
-                    return { keyLabel: k.label, models: [] as string[], error: d.error?.slice(0, 80) ?? `HTTP ${res.status}` };
-                  }
-                  const d = await res.json() as { models: { id: string }[] };
-                  return { keyLabel: k.label, models: (d.models ?? []).map(m => m.id).sort() };
-                }).catch((e: unknown) => ({ keyLabel: k.label, models: [] as string[], error: String(e).slice(0, 80) }))
-              )
-            );
-            setBrowsedModelGroups(results);
-            const totalCount = results.reduce((n, g) => n + g.models.length, 0);
-            if (totalCount > 0) setShowPicker(true);
-            else setBrowseError("No models found");
-          }
+          const results = await Promise.all(
+            keysToQuery.map(k =>
+              fetch("/api/admin/provider-models", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+                body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key }),
+              }).then(async res => {
+                if (!res.ok) {
+                  const d = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+                  return { keyLabel: k.label, models: [] as string[], error: d.error?.slice(0, 80) ?? `HTTP ${res.status}` };
+                }
+                const d = await res.json() as { models: { id: string }[] };
+                return { keyLabel: k.label, models: (d.models ?? []).map(m => m.id).sort() };
+              }).catch((e: unknown) => ({ keyLabel: k.label, models: [] as string[], error: String(e).slice(0, 80) }))
+            )
+          );
+          setBrowsedModelGroups(results);
+          const totalCount = results.reduce((n, g) => n + g.models.length, 0);
+          if (totalCount > 0) setShowPicker(true);
+          else setBrowseError("No models found");
         } else {
           setBrowseError("Select a provider first");
         }
@@ -1718,12 +1738,26 @@ function RoutingProviderRow({
   const handleProviderChange = (val: string) => {
     const builtin = ["cc", "rc", "ag"];
     if (builtin.includes(val)) {
-      onChange({ ...entry, providerType: val as "cc" | "rc" | "ag", providerId: undefined, modelId: "" });
+      onChange({ ...entry, providerType: val as "cc" | "rc" | "ag", providerId: undefined, modelId: "", apiKey: undefined, apiBaseUrl: undefined });
     } else {
-      onChange({ ...entry, providerType: "custom", providerId: val, modelId: "" });
+      onChange({ ...entry, providerType: "custom", providerId: val, modelId: "", apiKey: undefined, apiBaseUrl: undefined });
     }
     setBrowsedModels([]); setShowPicker(false); setBrowseError("");
   };
+
+  const handleKeyChange = (keyId: string) => {
+    if (keyId === "__any__") {
+      onChange({ ...entry, apiKey: undefined, apiBaseUrl: undefined });
+    } else {
+      const k = poolKeys.find(pk => pk.id === keyId);
+      if (k) onChange({ ...entry, apiKey: k.key, apiBaseUrl: k.baseUrl });
+    }
+    setBrowsedModels([]); setBrowsedModelGroups([]); setShowPicker(false); setBrowseError("");
+  };
+
+  const selectedKeyId = entry.apiKey
+    ? (poolKeys.find(k => k.key === entry.apiKey)?.id ?? "__unknown__")
+    : "__any__";
 
   const modelPlaceholder =
     entry.providerType === "rc" ? "rc:/codex-pro|gpt-5.4" :
@@ -1765,6 +1799,32 @@ function RoutingProviderRow({
             )}
           </select>
         </div>
+
+        {/* Key picker — only for custom providers */}
+        {entry.providerType === "custom" && entry.providerId && (
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] uppercase tracking-wider text-muted-foreground/40 w-16 flex-none">Key</span>
+            {poolKeys.length === 0 ? (
+              <p className="flex-1 text-[10px] text-amber-400/70 font-sans">
+                No keys found — add keys for this provider in Providers settings
+              </p>
+            ) : (
+              <select
+                value={selectedKeyId}
+                onChange={e => handleKeyChange(e.target.value)}
+                className="flex-1 h-7 rounded-md border border-border/40 bg-background/60 text-xs px-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+              >
+                <option value="__any__">— Any key (round-robin) —</option>
+                {poolKeys.map(k => (
+                  <option key={k.id} value={k.id}>{k.label}</option>
+                ))}
+              </select>
+            )}
+            {entry.apiKey && (
+              <span className="text-[9px] text-emerald-400/60 font-mono flex-none">✓ saved</span>
+            )}
+          </div>
+        )}
 
         {/* Model ID + Browse */}
         <div className="flex items-center gap-2">

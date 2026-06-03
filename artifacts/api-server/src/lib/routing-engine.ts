@@ -9,6 +9,9 @@ export type ResolvedRoute = {
   modelId: string;
   rateLimitKey: string;
   rpmLimit: number;
+  /** Populated for custom providers when a specific key was stored in the routing entry */
+  apiKey?: string;
+  apiBaseUrl?: string;
 };
 
 type RouteAttemptResult =
@@ -43,6 +46,8 @@ export async function resolveRoute(ruleName: string): Promise<RouteAttemptResult
           modelId: entry.modelId,
           rateLimitKey: key,
           rpmLimit: entry.rpmLimit,
+          apiKey: entry.apiKey,
+          apiBaseUrl: entry.apiBaseUrl,
         },
       };
     }
@@ -80,6 +85,8 @@ export async function resolveNextRoute(
         modelId: entry.modelId,
         rateLimitKey: key,
         rpmLimit: entry.rpmLimit,
+        apiKey: entry.apiKey,
+        apiBaseUrl: entry.apiBaseUrl,
       };
     }
   }

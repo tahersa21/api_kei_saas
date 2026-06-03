@@ -2,7 +2,7 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import os from "os";
 import Anthropic from "@anthropic-ai/sdk";
-import { db, userKeysTable, requestLogsTable } from "@workspace/db";
+import { db, userKeysTable, requestLogsTable, providersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid } from "../lib/key-pool";
 import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid } from "../lib/rc-pool";
@@ -415,6 +415,11 @@ router.post("/chat/stream", async (req, res) => {
 
   // ── Smart Routing: resolve route:* model references ──────────────────────
   let selectedModel = requestedModel;
+  let routedCustomApiKey: string | undefined;
+  let routedCustomBaseUrl: string | undefined;
+  let routedCustomProviderId: string | undefined;
+  let isRoutedCustom = false;
+
   if (isRoutingModel(requestedModel)) {
     const ruleName = extractRuleName(requestedModel);
     const result = await resolveRoute(ruleName);
@@ -427,6 +432,13 @@ router.post("/chat/stream", async (req, res) => {
     }
     selectedModel = result.route.modelId;
     req.log.info({ ruleName, resolved: result.route }, "Smart routing resolved");
+
+    if (result.route.providerType === "custom") {
+      isRoutedCustom = true;
+      routedCustomApiKey = result.route.apiKey;
+      routedCustomBaseUrl = result.route.apiBaseUrl;
+      routedCustomProviderId = result.route.providerId;
+    }
   }
 
   const isRightCode = selectedModel.startsWith("rc:");
@@ -892,6 +904,95 @@ router.post("/chat/stream", async (req, res) => {
       logRequest("error", String(err));
       if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
     }
+    return;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // ROUTED CUSTOM PROVIDER path  — routing rule resolved to a custom provider
+  // Uses the apiKey + baseUrl stored in the routing entry (set at rule creation)
+  // ════════════════════════════════════════════════════════════════════════════
+  if (isRoutedCustom) {
+    let baseUrl = routedCustomBaseUrl;
+    if (!baseUrl && routedCustomProviderId) {
+      const providerRows = await db
+        .select({ baseUrl: providersTable.baseUrl })
+        .from(providersTable)
+        .where(eq(providersTable.slug, routedCustomProviderId))
+        .limit(1);
+      baseUrl = providerRows[0]?.baseUrl;
+    }
+    if (!baseUrl) {
+      res.status(400).json({ error: "Custom provider base URL not found" });
+      return;
+    }
+    if (!routedCustomApiKey) {
+      res.status(400).json({ error: "No API key configured for this routing rule entry. Edit the rule and select a key." });
+      return;
+    }
+
+    const customMessages = (messages as Array<{ role: string; content: string }>)
+      .map(m => ({ role: m.role, content: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }));
+    const systemMsg = system || "You are a helpful AI assistant.";
+    const base = baseUrl.replace(/\/$/, "");
+
+    const typesToTry: CustomApiType[] = ["openai", "codex", "anthropic"];
+    let lastError = "";
+    const customFlush = () => (res as unknown as { flush?: () => void }).flush?.();
+    const customSendText = (text: string) => {
+      res.write(`data: ${JSON.stringify({ type: "text-delta", id: "0", text })}\n\n`);
+      customFlush();
+    };
+
+    for (const type of typesToTry) {
+      const { url, headers, body: upBody } = buildCustomUpstream(base, type, routedCustomApiKey, selectedModel, customMessages, systemMsg);
+      try {
+        const upstream = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(upBody),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!upstream.ok) {
+          lastError = (await upstream.text().catch(() => `HTTP ${upstream.status}`)).slice(0, 300);
+          continue;
+        }
+
+        startSse();
+        if (!upstream.body) { logRequest("ok"); res.write("data: [DONE]\n\n"); res.end(); return; }
+
+        const reader = upstream.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let lastEvent = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.startsWith("event:")) { lastEvent = line.slice(6).trim(); continue; }
+            if (!line.startsWith("data:")) { lastEvent = ""; continue; }
+            const jsonStr = line.slice(5).trim();
+            if (jsonStr === "[DONE]") { lastEvent = ""; continue; }
+            const text = parseCustomChunk(type, jsonStr, lastEvent);
+            if (text) customSendText(text);
+            lastEvent = "";
+          }
+        }
+        res.write("data: [DONE]\n\n");
+        customFlush();
+        logRequest("ok");
+        res.end();
+        return;
+      } catch (err) {
+        lastError = String(err).slice(0, 200);
+        req.log.warn({ type, err }, "Routed custom stream attempt failed");
+      }
+    }
+    logRequest("error", lastError);
+    if (!res.headersSent) res.status(502).json({ error: `Custom provider stream failed: ${lastError}` });
     return;
   }
 
