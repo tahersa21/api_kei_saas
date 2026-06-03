@@ -4,8 +4,8 @@ import os from "os";
 import Anthropic from "@anthropic-ai/sdk";
 import { db, userKeysTable, requestLogsTable, providersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
-import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid } from "../lib/key-pool";
-import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid } from "../lib/rc-pool";
+import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid, penalizeCcKey } from "../lib/key-pool";
+import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid, penalizeRcKey } from "../lib/rc-pool";
 import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute, penalizeRateLimit } from "../lib/routing-engine";
 
 const router = Router();
@@ -1361,6 +1361,7 @@ router.post("/v1/chat/completions", async (req, res) => {
     if (!upstream.ok) {
       const text = await upstream.text();
       if ((upstream.status === 401 || upstream.status === 403) && ccKeyId) await markCcKeyInvalid(ccKeyId);
+      if (upstream.status === 429 && ccKeyId) penalizeCcKey(ccKeyId);
       logRequest("error", text.slice(0, 255));
       res.status(upstream.status).json({ error: { message: text.slice(0, 300), type: "api_error" } });
       return;
@@ -1506,21 +1507,28 @@ router.post("/v1/messages", async (req, res) => {
     const text = await upstream.text();
     logAnthropicReq("error");
     if (upstream.status === 401 || upstream.status === 403) markRcKeyInvalid(poolKey.id).catch(() => {});
+    if (upstream.status === 429) penalizeRcKey(poolKey.id);
     res.status(upstream.status).set("Content-Type", "application/json").send(text);
     return;
   }
 
   const ct = upstream.headers.get("content-type") ?? "application/json";
   res.setHeader("Content-Type", ct);
+  let heartbeatV1Msg: ReturnType<typeof setInterval> | null = null;
   if (ct.includes("text/event-stream")) {
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
     res.flushHeaders();
+    // Heartbeat: SSE comment every 30 s so proxies/LBs don't drop idle connections
+    heartbeatV1Msg = setInterval(() => { if (!res.writableEnded) res.write(":\n\n"); }, 30_000);
   }
 
-  if (!upstream.body) { logAnthropicReq("ok"); res.end(); return; }
+  if (!upstream.body) {
+    if (heartbeatV1Msg) clearInterval(heartbeatV1Msg);
+    logAnthropicReq("ok"); res.end(); return;
+  }
   const anthropicReader = upstream.body.getReader();
   try {
     while (true) {
@@ -1534,6 +1542,8 @@ router.post("/v1/messages", async (req, res) => {
     logAnthropicReq("error");
     req.log.error({ err }, "Error streaming /v1/messages response");
     if (!res.headersSent) res.status(500).json({ type: "error", error: { type: "api_error", message: "Stream error" } });
+  } finally {
+    if (heartbeatV1Msg) clearInterval(heartbeatV1Msg);
   }
 });
 
@@ -1599,21 +1609,28 @@ router.post("/v1/responses", async (req, res) => {
     const text = await upstream.text();
     logCodexReq("error");
     if (upstream.status === 401 || upstream.status === 403) markRcKeyInvalid(poolKey.id).catch(() => {});
+    if (upstream.status === 429) penalizeRcKey(poolKey.id);
     res.status(upstream.status).set("Content-Type", "application/json").send(text);
     return;
   }
 
   const ctCodex = upstream.headers.get("content-type") ?? "application/json";
   res.setHeader("Content-Type", ctCodex);
+  let heartbeatCodex: ReturnType<typeof setInterval> | null = null;
   if (ctCodex.includes("text/event-stream")) {
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
     res.flushHeaders();
+    // Heartbeat: SSE comment every 30 s — Codex CLI sessions can last minutes
+    heartbeatCodex = setInterval(() => { if (!res.writableEnded) res.write(":\n\n"); }, 30_000);
   }
 
-  if (!upstream.body) { logCodexReq("ok"); res.end(); return; }
+  if (!upstream.body) {
+    if (heartbeatCodex) clearInterval(heartbeatCodex);
+    logCodexReq("ok"); res.end(); return;
+  }
   const codexReader = upstream.body.getReader();
   try {
     while (true) {
@@ -1627,6 +1644,8 @@ router.post("/v1/responses", async (req, res) => {
     logCodexReq("error");
     req.log.error({ err }, "Error streaming /v1/responses response");
     if (!res.headersSent) res.status(500).json({ error: { message: "Stream error", type: "api_error" } });
+  } finally {
+    if (heartbeatCodex) clearInterval(heartbeatCodex);
   }
 });
 

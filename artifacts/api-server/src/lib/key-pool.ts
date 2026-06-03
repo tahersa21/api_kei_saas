@@ -2,6 +2,7 @@ import { db, ccKeysTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import os from "os";
+import { checkRateLimit, penalizeRateLimit } from "./rate-limiter";
 
 // ── Round-robin counter (incremented BEFORE any await — safe in single-threaded JS) ──
 let counter = 0;
@@ -34,12 +35,26 @@ export function invalidateCcKeyCache(): void {
   keyCache = null;
 }
 
+/**
+ * Temporarily block a CC key for 60 s (after a 429 from upstream).
+ * Uses the rate-limiter's blocked map — key never permanently invalidated.
+ */
+export function penalizeCcKey(id: string): void {
+  penalizeRateLimit(`cc:${id}`, 0);
+}
+
 export async function getNextCcKey(): Promise<{ id: string; key: string } | null> {
   // Snapshot and increment BEFORE the async cache fetch — prevents concurrent
   // requests from all selecting the same key after awaiting the DB query.
   const idx = counter++;
   const keys = await loadCcKeys();
   if (keys.length === 0) return null;
+  // Skip keys that are temporarily blocked (e.g. after a 429 from upstream).
+  // Falls back to the round-robin key if every key is blocked.
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[(idx + i) % keys.length]!;
+    if (checkRateLimit(`cc:${key.id}`, 0)) return key;
+  }
   return keys[idx % keys.length] ?? null;
 }
 

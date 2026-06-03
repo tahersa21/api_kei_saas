@@ -85,6 +85,7 @@ router.post("/admin/cc-keys/:id/test", async (req, res) => {
     .update(ccKeysTable)
     .set({ isValid: result.ok, lastCheckedAt: new Date() })
     .where(eq(ccKeysTable.id, req.params.id));
+  invalidateCcKeyCache();
   res.json(result);
 });
 

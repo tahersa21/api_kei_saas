@@ -1,5 +1,6 @@
 import { db, rcKeysTable } from "@workspace/db";
 import { eq, and, sql } from "drizzle-orm";
+import { checkRateLimit, penalizeRateLimit } from "./rate-limiter";
 
 // ── Round-robin counter (incremented BEFORE any await — safe in single-threaded JS) ──
 let rcCounter = 0;
@@ -30,10 +31,23 @@ export function invalidateRcKeyCache(): void {
   rcKeyCache = null;
 }
 
+/**
+ * Temporarily block an RC key for 60 s (after a 429 from upstream).
+ * Uses the rate-limiter's blocked map — key never permanently invalidated.
+ */
+export function penalizeRcKey(id: string): void {
+  penalizeRateLimit(`rc:${id}`, 0);
+}
+
 export async function getNextRcKey(): Promise<{ id: string; key: string } | null> {
   const idx = rcCounter++;
   const keys = await loadRcKeys();
   if (keys.length === 0) return null;
+  // Skip keys temporarily blocked after a 429. Falls back to round-robin if all blocked.
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[(idx + i) % keys.length]!;
+    if (checkRateLimit(`rc:${key.id}`, 0)) return key;
+  }
   return keys[idx % keys.length] ?? null;
 }
 
