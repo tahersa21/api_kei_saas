@@ -6,7 +6,7 @@ import { db, userKeysTable, requestLogsTable, providersTable } from "@workspace/
 import { eq, sql } from "drizzle-orm";
 import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid } from "../lib/key-pool";
 import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid } from "../lib/rc-pool";
-import { isRoutingModel, extractRuleName, resolveRoute } from "../lib/routing-engine";
+import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute } from "../lib/routing-engine";
 
 const router = Router();
 
@@ -419,19 +419,22 @@ router.post("/chat/stream", async (req, res) => {
   let routedCustomBaseUrl: string | undefined;
   let routedCustomProviderId: string | undefined;
   let isRoutedCustom = false;
+  let routeRuleName: string | undefined;
+  let triedRouteKeys: string[] = [];
 
   if (isRoutingModel(requestedModel)) {
-    const ruleName = extractRuleName(requestedModel);
-    const result = await resolveRoute(ruleName);
+    routeRuleName = extractRuleName(requestedModel);
+    const result = await resolveRoute(routeRuleName);
     if (!result.ok) {
       const errMsg = result.reason === "all_rate_limited"
-        ? `All providers in routing rule "${ruleName}" are rate-limited. Try again shortly.`
-        : `Routing rule "${ruleName}" not found or inactive.`;
+        ? `All providers in routing rule "${routeRuleName}" are rate-limited. Try again shortly.`
+        : `Routing rule "${routeRuleName}" not found or inactive.`;
       res.status(result.reason === "all_rate_limited" ? 429 : 404).json({ error: errMsg });
       return;
     }
     selectedModel = result.route.modelId;
-    req.log.info({ ruleName, resolved: result.route }, "Smart routing resolved");
+    triedRouteKeys.push(result.route.rateLimitKey);
+    req.log.info({ ruleName: routeRuleName, resolved: result.route }, "Smart routing resolved");
 
     if (result.route.providerType === "custom") {
       isRoutedCustom = true;
@@ -440,9 +443,6 @@ router.post("/chat/stream", async (req, res) => {
       routedCustomProviderId = result.route.providerId;
     }
   }
-
-  const isRightCode = selectedModel.startsWith("rc:");
-  const isAiGoCode  = selectedModel.startsWith("ag:");
 
   // ── Logging helper ────────────────────────────────────────────────────────────
   const logRequest = (status: "ok" | "error", errorMsg?: string) => {
@@ -487,6 +487,27 @@ router.post("/chat/stream", async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: "text-delta", id: "0", text })}\n\n`);
     flush(res);
   };
+
+  // Attempt to switch to the next provider in the routing chain on failure.
+  // Updates selectedModel + routing vars. Returns true if a new route was loaded.
+  const tryFallback = async (): Promise<boolean> => {
+    if (!routeRuleName) return false;
+    const next = await resolveNextRoute(routeRuleName, triedRouteKeys);
+    if (!next) return false;
+    req.log.warn({ next, triedKeys: triedRouteKeys }, "Routing fallback: switching to next provider in chain");
+    selectedModel    = next.modelId;
+    isRoutedCustom   = next.providerType === "custom";
+    routedCustomApiKey     = next.apiKey;
+    routedCustomBaseUrl    = next.apiBaseUrl;
+    routedCustomProviderId = next.providerId;
+    triedRouteKeys.push(next.rateLimitKey);
+    return true;
+  };
+
+  // ── Provider execution loop (retries via routing chain on upstream errors) ──
+  routingLoop: while (true) {
+  const isRightCode = selectedModel.startsWith("rc:");
+  const isAiGoCode  = selectedModel.startsWith("ag:");
 
   // ════════════════════════════════════════════════════════════════════════════
   // RIGHT CODE path
@@ -576,6 +597,7 @@ router.post("/chat/stream", async (req, res) => {
           markRcKeyInvalid(rcPoolKeyId).catch(() => {});
         }
         if (!res.headersSent) {
+          if (await tryFallback()) continue routingLoop;
           res.status(500).json({ error: errStr });
         } else {
           res.write(`data: ${JSON.stringify({ type: "error", error: errStr })}\n\n`);
@@ -677,6 +699,7 @@ router.post("/chat/stream", async (req, res) => {
         } else if (upstream.status === 401 || upstream.status === 403) {
           userMessage = `مفتاح Right Code غير صالح أو انتهت صلاحيته. (${upstream.status})`;
         }
+        if (await tryFallback()) continue routingLoop;
         logRequest("error", userMessage.slice(0, 255));
         res.status(upstream.status).json({ error: userMessage });
         return;
@@ -755,7 +778,10 @@ router.post("/chat/stream", async (req, res) => {
     } catch (err) {
       req.log.error({ err }, "Error proxying to Right Code");
       logRequest("error", String(err));
-      if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+      if (!res.headersSent) {
+        if (await tryFallback()) continue routingLoop;
+        res.status(500).json({ error: "Internal server error" });
+      }
     }
     return;
   }
@@ -844,6 +870,7 @@ router.post("/chat/stream", async (req, res) => {
         if (upstream.status === 401 || upstream.status === 403) {
           userMessage = `مفتاح AiGoCode غير صالح أو انتهت صلاحيته. (${upstream.status})`;
         }
+        if (await tryFallback()) continue routingLoop;
         logRequest("error", userMessage.slice(0, 255));
         res.status(upstream.status).json({ error: userMessage });
         return;
@@ -902,7 +929,10 @@ router.post("/chat/stream", async (req, res) => {
     } catch (err) {
       req.log.error({ err }, "Error proxying to AiGoCode");
       logRequest("error", String(err));
-      if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+      if (!res.headersSent) {
+        if (await tryFallback()) continue routingLoop;
+        res.status(500).json({ error: "Internal server error" });
+      }
     }
     return;
   }
@@ -991,6 +1021,7 @@ router.post("/chat/stream", async (req, res) => {
         req.log.warn({ type, err }, "Routed custom stream attempt failed");
       }
     }
+    if (!res.headersSent && await tryFallback()) continue routingLoop;
     logRequest("error", lastError);
     if (!res.headersSent) res.status(502).json({ error: `Custom provider stream failed: ${lastError}` });
     return;
@@ -1062,21 +1093,25 @@ router.post("/chat/stream", async (req, res) => {
     if (!upstream.ok) {
       const text = await upstream.text();
       req.log.error({ status: upstream.status, body: text }, "CommandCode API error");
-      if ((upstream.status === 401 || upstream.status === 403) && ccKeyId) {
-        await markCcKeyInvalid(ccKeyId);
-      }
       let userMessage = text;
+      let isModelNotInPlan = false;
       try {
         const outer = JSON.parse(text) as { error?: string };
         const inner = JSON.parse(outer.error ?? "{}") as { error?: { code?: string; message?: string } };
         const msg = inner?.error?.message ?? "";
         const code = inner?.error?.code ?? "";
-        if (code === "MODEL_NOT_IN_PLAN" || upstream.status === 403) {
+        isModelNotInPlan = code === "MODEL_NOT_IN_PLAN";
+        if (isModelNotInPlan) {
           userMessage = `MODEL_NOT_IN_PLAN: ${msg || "This model requires a Pro plan."}`;
         } else if (msg) {
           userMessage = msg;
         }
       } catch { /* keep raw */ }
+      // Only invalidate key for true auth failures — not for plan restrictions
+      if ((upstream.status === 401 || upstream.status === 403) && ccKeyId && !isModelNotInPlan) {
+        await markCcKeyInvalid(ccKeyId);
+      }
+      if (await tryFallback()) continue routingLoop;
       logRequest("error", userMessage);
       res.status(upstream.status).json({ error: userMessage });
       return;
@@ -1131,8 +1166,13 @@ router.post("/chat/stream", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Error proxying to CommandCode");
     logRequest("error", String(err));
-    if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+    if (!res.headersSent) {
+      if (await tryFallback()) continue routingLoop;
+      res.status(500).json({ error: "Internal server error" });
+    }
   }
+  break; // success — exit the routing loop
+  } // end routingLoop
 });
 
 // ════════════════════════════════════════════════════════════════════════════
