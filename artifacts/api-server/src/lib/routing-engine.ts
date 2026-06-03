@@ -1,7 +1,8 @@
 import { db, routingRulesTable } from "@workspace/db";
 import type { RoutingProviderEntry } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { checkRateLimit } from "./rate-limiter";
+import { checkRateLimit, penalizeRateLimit } from "./rate-limiter";
+export { penalizeRateLimit } from "./rate-limiter";
 
 export type ResolvedRoute = {
   providerType: "cc" | "rc" | "ag" | "custom";
@@ -94,11 +95,14 @@ export async function resolveNextRoute(
 }
 
 function getRateLimitKey(entry: RoutingProviderEntry): string {
+  // Use the stored API key suffix as discriminator so different accounts
+  // of the same provider type each get their own rate-limit bucket.
+  const keySuffix = entry.apiKey ? `:${entry.apiKey.slice(-10)}` : "";
   switch (entry.providerType) {
-    case "cc":     return "cc";
-    case "rc":     return "rc:pool";
-    case "ag":     return "ag:pool";
-    case "custom": return `custom:${entry.providerId ?? "unknown"}`;
+    case "cc":     return `cc${keySuffix || ":pool"}`;
+    case "rc":     return `rc${keySuffix || ":pool"}`;
+    case "ag":     return `ag${keySuffix || ":pool"}`;
+    case "custom": return `custom:${entry.providerId ?? "unknown"}${keySuffix}`;
     default:       return entry.providerType;
   }
 }

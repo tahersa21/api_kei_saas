@@ -6,7 +6,7 @@ import { db, userKeysTable, requestLogsTable, providersTable } from "@workspace/
 import { eq, sql } from "drizzle-orm";
 import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid } from "../lib/key-pool";
 import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid } from "../lib/rc-pool";
-import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute } from "../lib/routing-engine";
+import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute, penalizeRateLimit } from "../lib/routing-engine";
 
 const router = Router();
 
@@ -421,6 +421,8 @@ router.post("/chat/stream", async (req, res) => {
   let isRoutedCustom = false;
   let routeRuleName: string | undefined;
   let triedRouteKeys: string[] = [];
+  let currentRateLimitKey = "";
+  let currentRpmLimit = 0;
 
   if (isRoutingModel(requestedModel)) {
     routeRuleName = extractRuleName(requestedModel);
@@ -434,6 +436,8 @@ router.post("/chat/stream", async (req, res) => {
     }
     selectedModel = result.route.modelId;
     triedRouteKeys.push(result.route.rateLimitKey);
+    currentRateLimitKey = result.route.rateLimitKey;
+    currentRpmLimit     = result.route.rpmLimit;
     req.log.info({ ruleName: routeRuleName, resolved: result.route }, "Smart routing resolved");
 
     if (result.route.providerType === "custom") {
@@ -495,11 +499,13 @@ router.post("/chat/stream", async (req, res) => {
     const next = await resolveNextRoute(routeRuleName, triedRouteKeys);
     if (!next) return false;
     req.log.warn({ next, triedKeys: triedRouteKeys }, "Routing fallback: switching to next provider in chain");
-    selectedModel    = next.modelId;
-    isRoutedCustom   = next.providerType === "custom";
+    selectedModel          = next.modelId;
+    isRoutedCustom         = next.providerType === "custom";
     routedCustomApiKey     = next.apiKey;
     routedCustomBaseUrl    = next.apiBaseUrl;
     routedCustomProviderId = next.providerId;
+    currentRateLimitKey    = next.rateLimitKey;
+    currentRpmLimit        = next.rpmLimit;
     triedRouteKeys.push(next.rateLimitKey);
     return true;
   };
@@ -699,6 +705,7 @@ router.post("/chat/stream", async (req, res) => {
         } else if (upstream.status === 401 || upstream.status === 403) {
           userMessage = `مفتاح Right Code غير صالح أو انتهت صلاحيته. (${upstream.status})`;
         }
+        if (upstream.status === 429) penalizeRateLimit(currentRateLimitKey, currentRpmLimit);
         if (await tryFallback()) continue routingLoop;
         logRequest("error", userMessage.slice(0, 255));
         res.status(upstream.status).json({ error: userMessage });
@@ -870,6 +877,7 @@ router.post("/chat/stream", async (req, res) => {
         if (upstream.status === 401 || upstream.status === 403) {
           userMessage = `مفتاح AiGoCode غير صالح أو انتهت صلاحيته. (${upstream.status})`;
         }
+        if (upstream.status === 429) penalizeRateLimit(currentRateLimitKey, currentRpmLimit);
         if (await tryFallback()) continue routingLoop;
         logRequest("error", userMessage.slice(0, 255));
         res.status(upstream.status).json({ error: userMessage });
@@ -1111,6 +1119,7 @@ router.post("/chat/stream", async (req, res) => {
       if ((upstream.status === 401 || upstream.status === 403) && ccKeyId && !isModelNotInPlan) {
         await markCcKeyInvalid(ccKeyId);
       }
+      if (upstream.status === 429) penalizeRateLimit(currentRateLimitKey, currentRpmLimit);
       if (await tryFallback()) continue routingLoop;
       logRequest("error", userMessage);
       res.status(upstream.status).json({ error: userMessage });

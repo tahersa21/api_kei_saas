@@ -41,6 +41,20 @@ export function getCurrentRpm(key: string): number {
 }
 
 /**
+ * Penalise a key by filling its sliding window to the configured limit.
+ * Call when an upstream provider returns 429 so the routing engine skips
+ * it on the next request instead of hammering it again immediately.
+ */
+export function penalizeRateLimit(key: string, rpmLimit: number): void {
+  if (rpmLimit <= 0) return; // unlimited — nothing to penalise
+  const now = Date.now();
+  const cutoff = now - 60_000;
+  const existing = (windows.get(key) ?? []).filter((t) => t > cutoff);
+  const toAdd = Math.max(0, rpmLimit - existing.length);
+  windows.set(key, [...existing, ...Array<number>(toAdd).fill(now)]);
+}
+
+/**
  * Returns RPM stats for all tracked keys.
  */
 export function getAllRpmStats(): Record<string, number> {
