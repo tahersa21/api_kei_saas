@@ -448,6 +448,13 @@ router.post("/chat/stream", async (req, res) => {
     }
   }
 
+  // ── Client-disconnect guard — aborts upstream the moment the client drops ─────
+  // Without this, long agentic tool calls (Codex, Claude Code) keep running
+  // and burning credits even after the client disconnects or retries.
+  const clientAbort = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) clientAbort.abort(); });
+  const isAbort = (e: unknown): boolean => e instanceof Error && e.name === "AbortError";
+
   // ── Logging helper ────────────────────────────────────────────────────────────
   const logRequest = (status: "ok" | "error", errorMsg?: string) => {
     const elapsedMs = Date.now() - startTime;
@@ -576,7 +583,7 @@ router.post("/chat/stream", async (req, res) => {
           ...(systemMsg ? { system: systemMsg } : {}),
           thinking: { type: "adaptive", budget_tokens: 10000 },
           temperature: 1,
-        });
+        }, { signal: clientAbort.signal });
 
         for await (const event of stream) {
           if (event.type === "content_block_delta") {
@@ -596,6 +603,7 @@ router.post("/chat/stream", async (req, res) => {
         if (rcPoolKeyId) incrementRcKeyUsage(rcPoolKeyId).catch(() => {});
         res.end();
       } catch (err) {
+        if (isAbort(err)) { if (!res.writableEnded) res.end(); return; }
         const errStr = String(err);
         req.log.error({ err }, "Anthropic SDK error for /claude channel");
         logRequest("error", errStr);
@@ -690,6 +698,7 @@ router.post("/chat/stream", async (req, res) => {
         method: "POST",
         headers: upstreamHeaders,
         body: JSON.stringify(upstreamBody),
+        signal: clientAbort.signal,
       });
 
       if (!upstream.ok) {
@@ -868,6 +877,7 @@ router.post("/chat/stream", async (req, res) => {
         method: "POST",
         headers: upstreamHeaders,
         body: JSON.stringify(upstreamBody),
+        signal: clientAbort.signal,
       });
 
       if (!upstream.ok) {
@@ -935,6 +945,7 @@ router.post("/chat/stream", async (req, res) => {
       logRequest("ok");
       res.end();
     } catch (err) {
+      if (isAbort(err)) { if (!res.writableEnded) res.end(); return; }
       req.log.error({ err }, "Error proxying to AiGoCode");
       logRequest("error", String(err));
       if (!res.headersSent) {
@@ -988,7 +999,7 @@ router.post("/chat/stream", async (req, res) => {
           method: "POST",
           headers,
           body: JSON.stringify(upBody),
-          signal: AbortSignal.timeout(30_000),
+          signal: clientAbort.signal,
         });
         if (!upstream.ok) {
           lastError = (await upstream.text().catch(() => `HTTP ${upstream.status}`)).slice(0, 300);
@@ -1025,6 +1036,7 @@ router.post("/chat/stream", async (req, res) => {
         res.end();
         return;
       } catch (err) {
+        if (isAbort(err)) { if (!res.writableEnded) res.end(); return; }
         lastError = String(err).slice(0, 200);
         req.log.warn({ type, err }, "Routed custom stream attempt failed");
       }
@@ -1096,6 +1108,7 @@ router.post("/chat/stream", async (req, res) => {
       method: "POST",
       headers: upstreamHeaders,
       body: JSON.stringify(body),
+      signal: clientAbort.signal,
     });
 
     if (!upstream.ok) {
@@ -1173,6 +1186,7 @@ router.post("/chat/stream", async (req, res) => {
     logRequest("ok");
     res.end();
   } catch (err) {
+    if (isAbort(err)) { if (!res.writableEnded) res.end(); return; }
     req.log.error({ err }, "Error proxying to CommandCode");
     logRequest("error", String(err));
     if (!res.headersSent) {
@@ -1254,6 +1268,9 @@ router.post("/v1/chat/completions", async (req, res) => {
   const ccKeyId = poolKey.id;
   const startTime = Date.now();
 
+  const clientAbort2 = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) clientAbort2.abort(); });
+
   type OAIMessage = { role: string; content: string };
   const { model, messages, stream = false } = req.body as {
     model?: string;
@@ -1307,7 +1324,7 @@ router.post("/v1/chat/completions", async (req, res) => {
   };
 
   try {
-    const upstream = await fetch(COMMANDCODE_URL, { method: "POST", headers: upstreamHeaders, body: JSON.stringify(ccBody) });
+    const upstream = await fetch(COMMANDCODE_URL, { method: "POST", headers: upstreamHeaders, body: JSON.stringify(ccBody), signal: clientAbort2.signal });
 
     if (!upstream.ok) {
       const text = await upstream.text();
@@ -1422,6 +1439,9 @@ router.post("/v1/messages", async (req, res) => {
   const userKeyId = rows[0].id;
   const body = req.body as Record<string, unknown>;
 
+  const clientAbortMsg = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) clientAbortMsg.abort(); });
+
   let upstream: Response;
   try {
     upstream = await fetch(`${RC_BASE}/claude-aws/v1/messages`, {
@@ -1433,8 +1453,10 @@ router.post("/v1/messages", async (req, res) => {
         ...(req.headers["anthropic-beta"] ? { "anthropic-beta": req.headers["anthropic-beta"] as string } : {}),
       },
       body: JSON.stringify(body),
+      signal: clientAbortMsg.signal,
     });
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
     res.status(502).json({ type: "error", error: { type: "api_error", message: String(err) } });
     return;
   }
@@ -1512,6 +1534,9 @@ router.post("/v1/responses", async (req, res) => {
   const userKeyId = rows[0].id;
   const body = req.body as Record<string, unknown>;
 
+  const clientAbortRes = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) clientAbortRes.abort(); });
+
   let upstream: Response;
   try {
     upstream = await fetch(`${RC_BASE}/codex/v1/responses`, {
@@ -1521,8 +1546,10 @@ router.post("/v1/responses", async (req, res) => {
         Authorization: `Bearer ${poolKey.key}`,
       },
       body: JSON.stringify(body),
+      signal: clientAbortRes.signal,
     });
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
     res.status(502).json({ error: { message: String(err), type: "api_error" } });
     return;
   }
@@ -1757,6 +1784,9 @@ router.post("/chat/custom-stream", async (req, res) => {
     flush();
   };
 
+  const clientAbortCustom = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) clientAbortCustom.abort(); });
+
   let lastError = "";
 
   for (const type of typesToTry) {
@@ -1767,7 +1797,7 @@ router.post("/chat/custom-stream", async (req, res) => {
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30_000),
+        signal: clientAbortCustom.signal,
       });
 
       if (!upstream.ok) {
@@ -1819,6 +1849,7 @@ router.post("/chat/custom-stream", async (req, res) => {
       res.end();
       return;
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
       lastError = String(err).slice(0, 200);
       req.log.warn({ type, err }, "custom-stream attempt error, trying next");
     }
