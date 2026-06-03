@@ -103,11 +103,19 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 
 // ── CC models cache (refreshed every 10 minutes) ──────────────────────────────
 let ccModelsCache: { models: ModelDef[]; fetchedAt: number } | null = null;
+let ccModelsFetch: Promise<ModelDef[]> | null = null; // coalesces concurrent cache misses
 
 async function fetchCcModels(apiKey: string): Promise<ModelDef[]> {
   if (ccModelsCache && Date.now() - ccModelsCache.fetchedAt < CACHE_TTL_MS) {
     return ccModelsCache.models;
   }
+  // All concurrent cache-miss requests share a single in-flight fetch
+  if (ccModelsFetch) return ccModelsFetch;
+  ccModelsFetch = doFetchCcModels(apiKey).finally(() => { ccModelsFetch = null; });
+  return ccModelsFetch;
+}
+
+async function doFetchCcModels(apiKey: string): Promise<ModelDef[]> {
   try {
     const res = await fetch(COMMANDCODE_MODELS_URL, {
       headers: {
@@ -151,10 +159,11 @@ async function fetchCcModels(apiKey: string): Promise<ModelDef[]> {
   } catch {
     return ccModelsCache?.models ?? CC_MODELS_FALLBACK;
   }
-}
+} // end doFetchCcModels
 
 // ── RC models cache (public endpoint, no auth needed) ─────────────────────────
 let rcModelsCache: { models: ModelDef[]; fetchedAt: number } | null = null;
+let rcModelsFetch: Promise<ModelDef[]> | null = null; // coalesces concurrent cache misses
 
 function prettifyRcModelName(raw: string): string {
   return raw
@@ -176,6 +185,12 @@ async function fetchRcModels(): Promise<ModelDef[]> {
   if (rcModelsCache && Date.now() - rcModelsCache.fetchedAt < CACHE_TTL_MS) {
     return rcModelsCache.models;
   }
+  if (rcModelsFetch) return rcModelsFetch;
+  rcModelsFetch = doFetchRcModels().finally(() => { rcModelsFetch = null; });
+  return rcModelsFetch;
+}
+
+async function doFetchRcModels(): Promise<ModelDef[]> {
   try {
     const res = await fetch(RC_MODELS_PUBLIC);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -242,12 +257,24 @@ function getRcUpstreamUrl(prefix: string, modelName: string): string {
   return `${RC_BASE}${prefix}/v1/chat/completions`;
 }
 
-// ── AG models cache (per-key, 10 min TTL) ─────────────────────────────────────
+// ── AG models cache (per-key, 10 min TTL, max 200 entries) ───────────────────
+// Bounded to prevent unbounded growth when many different API keys are used.
+const AG_CACHE_MAX = 200;
 const agModelsCache = new Map<string, { models: ModelDef[]; fetchedAt: number }>();
+const agModelsFetchMap = new Map<string, Promise<ModelDef[]>>(); // coalesces concurrent cache misses
 
 async function fetchAgModels(apiKey: string): Promise<ModelDef[]> {
   const cached = agModelsCache.get(apiKey);
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) return cached.models;
+  const inflight = agModelsFetchMap.get(apiKey);
+  if (inflight) return inflight;
+
+  const p = doFetchAgModels(apiKey).finally(() => { agModelsFetchMap.delete(apiKey); });
+  agModelsFetchMap.set(apiKey, p);
+  return p;
+}
+
+async function doFetchAgModels(apiKey: string): Promise<ModelDef[]> {
   try {
     const res = await fetch(`${AG_BASE}/v1/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -274,6 +301,11 @@ async function fetchAgModels(apiKey: string): Promise<ModelDef[]> {
       };
     });
 
+    // Evict oldest entry when cache is at capacity
+    if (agModelsCache.size >= AG_CACHE_MAX) {
+      const oldest = agModelsCache.keys().next().value;
+      if (oldest) agModelsCache.delete(oldest);
+    }
     agModelsCache.set(apiKey, { models, fetchedAt: Date.now() });
     return models;
   } catch {

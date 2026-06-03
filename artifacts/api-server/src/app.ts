@@ -47,4 +47,15 @@ if (existsSync(publicDir)) {
   logger.info({ publicDir }, "Serving frontend static files");
 }
 
+// ── Global safety nets ────────────────────────────────────────────────────────
+// Catch promise rejections that escape route handlers (e.g. fire-and-forget ops).
+// Without this, an unhandled rejection in Node 15+ terminates the process.
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled promise rejection — check for missing .catch()");
+});
+
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception — server will continue but inspect immediately");
+});
+
 export default app;

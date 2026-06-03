@@ -87,3 +87,23 @@ export function getAllRpmStats(): Record<string, number> {
   }
   return stats;
 }
+
+/**
+ * Periodic cleanup — removes stale Map entries to prevent unbounded memory growth.
+ * Called automatically every 5 minutes. Safe to call manually at any time.
+ */
+export function cleanupRateLimiter(): void {
+  const now = Date.now();
+  const cutoff = now - 60_000;
+  for (const [key, timestamps] of windows.entries()) {
+    const alive = timestamps.filter((t) => t > cutoff);
+    if (alive.length === 0) windows.delete(key);
+    else windows.set(key, alive);
+  }
+  for (const [key, until] of blocked.entries()) {
+    if (now >= until) blocked.delete(key);
+  }
+}
+
+// Run cleanup automatically every 5 minutes
+setInterval(cleanupRateLimiter, 5 * 60_000).unref();

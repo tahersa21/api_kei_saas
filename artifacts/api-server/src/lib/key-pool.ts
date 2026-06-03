@@ -3,19 +3,44 @@ import { eq, and, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import os from "os";
 
+// ── Round-robin counter (incremented BEFORE any await — safe in single-threaded JS) ──
 let counter = 0;
 
-export async function getNextCcKey(): Promise<{ id: string; key: string } | null> {
-  const keys = await db
+// ── In-memory key cache (5-second TTL) ────────────────────────────────────────────
+// Avoids hitting the DB on every request. Stale for up to 5s after key add/remove.
+const KEY_CACHE_TTL_MS = 5_000;
+let keyCache: { keys: { id: string; key: string }[]; fetchedAt: number } | null = null;
+let keyCacheFetch: Promise<{ id: string; key: string }[]> | null = null;
+
+async function loadCcKeys(): Promise<{ id: string; key: string }[]> {
+  const now = Date.now();
+  if (keyCache && now - keyCache.fetchedAt < KEY_CACHE_TTL_MS) return keyCache.keys;
+  // Coalesce concurrent cache-miss fetches into a single DB query
+  if (keyCacheFetch) return keyCacheFetch;
+  keyCacheFetch = db
     .select({ id: ccKeysTable.id, key: ccKeysTable.key })
     .from(ccKeysTable)
-    .where(and(eq(ccKeysTable.isActive, true), eq(ccKeysTable.isValid, true)));
+    .where(and(eq(ccKeysTable.isActive, true), eq(ccKeysTable.isValid, true)))
+    .then((keys) => {
+      keyCache = { keys, fetchedAt: Date.now() };
+      return keys;
+    })
+    .finally(() => { keyCacheFetch = null; });
+  return keyCacheFetch;
+}
 
+/** Invalidate the key cache (call after add/remove/mark-invalid operations). */
+export function invalidateCcKeyCache(): void {
+  keyCache = null;
+}
+
+export async function getNextCcKey(): Promise<{ id: string; key: string } | null> {
+  // Snapshot and increment BEFORE the async cache fetch — prevents concurrent
+  // requests from all selecting the same key after awaiting the DB query.
+  const idx = counter++;
+  const keys = await loadCcKeys();
   if (keys.length === 0) return null;
-
-  const key = keys[counter % keys.length];
-  counter = (counter + 1) % Math.max(keys.length, 1);
-  return key;
+  return keys[idx % keys.length] ?? null;
 }
 
 export async function incrementCcKeyUsage(id: string): Promise<void> {
@@ -33,6 +58,7 @@ export async function markCcKeyInvalid(id: string): Promise<void> {
     .update(ccKeysTable)
     .set({ isValid: false, lastCheckedAt: new Date() })
     .where(eq(ccKeysTable.id, id));
+  invalidateCcKeyCache();
 }
 
 const CC_URL = "https://api.commandcode.ai/alpha/generate";

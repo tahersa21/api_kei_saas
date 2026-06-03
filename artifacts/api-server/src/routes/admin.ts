@@ -4,7 +4,8 @@ import { db, ccKeysTable, rcKeysTable, userKeysTable, requestLogsTable, provider
 import type { RoutingProviderEntry } from "@workspace/db";
 import { eq, and, desc, sql, count, gte } from "drizzle-orm";
 import { signAdminToken, adminAuthMiddleware } from "../lib/admin-auth";
-import { testCcKey } from "../lib/key-pool";
+import { testCcKey, invalidateCcKeyCache } from "../lib/key-pool";
+import { invalidateRcKeyCache } from "../lib/rc-pool";
 import { getAllRpmStats } from "../lib/rate-limiter";
 
 const router = Router();
@@ -43,6 +44,7 @@ router.post("/admin/cc-keys", async (req, res) => {
     .insert(ccKeysTable)
     .values({ id, label: label?.trim() || "API Key", key: key.trim() })
     .returning();
+  invalidateCcKeyCache();
   res.json({ key: mask(created) });
 });
 
@@ -58,11 +60,13 @@ router.patch("/admin/cc-keys/:id", async (req, res) => {
   if (isActive !== undefined) updates.isActive = isActive;
   if (isValid !== undefined) updates.isValid = isValid;
   await db.update(ccKeysTable).set(updates).where(eq(ccKeysTable.id, id));
+  invalidateCcKeyCache();
   res.json({ ok: true });
 });
 
 router.delete("/admin/cc-keys/:id", async (req, res) => {
   await db.delete(ccKeysTable).where(eq(ccKeysTable.id, req.params.id));
+  invalidateCcKeyCache();
   res.json({ ok: true });
 });
 
@@ -102,6 +106,7 @@ router.post("/admin/rc-keys", async (req, res) => {
     .insert(rcKeysTable)
     .values({ id, label: label?.trim() || "RC Key", key: key.trim() })
     .returning();
+  invalidateRcKeyCache();
   res.json({ key: mask(created) });
 });
 
@@ -117,11 +122,13 @@ router.patch("/admin/rc-keys/:id", async (req, res) => {
   if (isActive !== undefined) updates.isActive = isActive;
   if (isValid !== undefined) updates.isValid = isValid;
   await db.update(rcKeysTable).set(updates).where(eq(rcKeysTable.id, id));
+  invalidateRcKeyCache();
   res.json({ ok: true });
 });
 
 router.delete("/admin/rc-keys/:id", async (req, res) => {
   await db.delete(rcKeysTable).where(eq(rcKeysTable.id, req.params.id));
+  invalidateRcKeyCache();
   res.json({ ok: true });
 });
 
