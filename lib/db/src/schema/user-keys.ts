@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 
 export const userKeysTable = pgTable("user_keys", {
   id: text("id").primaryKey(),
+  clerkUserId: text("clerk_user_id"),
   label: text("label").notNull(),
   key: text("key").notNull().unique(),
   isActive: boolean("is_active").notNull().default(true),

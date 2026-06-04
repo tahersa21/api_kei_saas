@@ -3,7 +3,7 @@ import { useUser, UserButton } from "@clerk/react";
 import {
   Home, LayoutDashboard, FileText, Key, Cpu, CreditCard, MessageSquare,
   Users, Phone, ChevronLeft, ChevronRight, RefreshCw, Copy, Check,
-  Search, ExternalLink, Bell, Globe, Shield,
+  Search, ExternalLink, Bell, Globe, Shield, Plus, Trash2, ToggleLeft, ToggleRight, Eye, EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,23 +16,25 @@ type Stats = {
   totalRequests: number; rangeRequests: number; todayRequests: number;
   topModels: { model: string; count: number }[];
   recentLogs: { model: string; status: string; elapsedMs: number | null; createdAt: string }[];
-  keyLabel: string; keyMasked: string; keyActive: boolean; keyCreatedAt: string;
+};
+type UserKey = {
+  id: string; label: string; key: string; isActive: boolean;
+  usageCount: number; lastUsedAt: string | null; createdAt: string;
 };
 type Log = { id: string; model: string; status: string; elapsedMs: number | null; createdAt: string };
 type LogsResponse = { total: number; page: number; pageSize: number; logs: Log[] };
 type Range = "today" | "7d" | "30d";
 
-const STORAGE_KEY = "cc_user_api_key";
 const ANNOUNCEMENTS = [
-  { date: "1 days ago", pinned: true, text: "Platform update: New CC models added including DeepSeek-V3 and Qwen 2.5-Max. Enjoy faster response times with optimized routing." },
-  { date: "2 days ago", pinned: true, text: "Right Code /claude channel maintenance window completed. Service fully restored with improved stability." },
-  { date: "3 days ago", pinned: false, text: "API key rotation reminder: For security, we recommend rotating your API keys every 90 days." },
+  { date: "1 day ago", pinned: true, text: "Platform update: New CC models added including DeepSeek-V3 and Qwen 2.5-Max. Enjoy faster response times with optimised routing." },
+  { date: "2 days ago", pinned: true, text: "Right Code /claude channel maintenance completed. Service fully restored with improved stability." },
+  { date: "3 days ago", pinned: false, text: "API key rotation reminder: For security, rotate your API keys every 90 days." },
 ];
 
-// ── API helpers ────────────────────────────────────────────────────────────────
-async function apiFetch<T>(path: string, apiKey: string): Promise<T | null> {
+// ── API helper (Clerk session cookie sent automatically) ──────────────────────
+async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T | null> {
   try {
-    const res = await fetch(path, { headers: { "X-Api-Key": apiKey } });
+    const res = await fetch(path, { credentials: "include", ...opts });
     if (!res.ok) return null;
     return res.json() as Promise<T>;
   } catch { return null; }
@@ -77,40 +79,49 @@ function EmptyChart({ text }: { text: string }) {
   );
 }
 
-function CopyBtn({ text }: { text: string }) {
+function CopyBtn({ text, size = "sm" }: { text: string; size?: "sm" | "md" }) {
   const [copied, setCopied] = useState(false);
   const copy = () => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const cls = size === "md" ? "w-4 h-4" : "w-3.5 h-3.5";
   return (
     <button onClick={copy} className="p-1 text-white/30 hover:text-white/70 transition-colors">
-      {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied ? <Check className={`${cls} text-green-400`} /> : <Copy className={cls} />}
     </button>
   );
 }
 
-// ── Key setup overlay ─────────────────────────────────────────────────────────
-function KeySetup({ onSave }: { onSave: (k: string) => void }) {
-  const [input, setInput] = useState("");
+// ── New Key Modal ─────────────────────────────────────────────────────────────
+function NewKeyModal({ fullKey, onClose }: { fullKey: string; onClose: () => void }) {
   return (
-    <div className="flex-1 flex items-center justify-center p-8">
-      <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-8 w-full max-w-md text-center space-y-4">
-        <div className="w-12 h-12 bg-[#f97316]/10 rounded-xl flex items-center justify-center mx-auto">
-          <Key className="w-6 h-6 text-[#f97316]" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-[#18181b] border border-white/10 rounded-2xl p-7 w-full max-w-lg space-y-5">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-green-500/10 rounded-xl flex items-center justify-center">
+            <Key className="w-5 h-5 text-green-400" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-white">API Key Created</h2>
+            <p className="text-xs text-white/40 mt-0.5">Copy and save it now — it won't be shown again.</p>
+          </div>
         </div>
-        <h2 className="text-lg font-bold text-white">Enter Your API Key</h2>
-        <p className="text-sm text-white/50">Enter your <code className="text-[#f97316] font-mono">sk-cc-*</code> key provided by the platform admin to access your dashboard.</p>
-        <div className="flex gap-2">
-          <Input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && input.trim() && onSave(input.trim())}
-            placeholder="sk-cc-..." className="flex-1 bg-white/5 border-white/10 text-white font-mono text-sm placeholder:text-white/20 focus:border-[#f97316]/50" />
-          <Button onClick={() => input.trim() && onSave(input.trim())} disabled={!input.trim()} className="bg-[#f97316] hover:bg-[#ea6c0f] border-0 text-white shrink-0">Save</Button>
+        <div className="bg-black/40 border border-white/10 rounded-lg p-4 flex items-center gap-2">
+          <code className="flex-1 font-mono text-green-400 text-sm break-all">{fullKey}</code>
+          <CopyBtn text={fullKey} size="md" />
         </div>
+        <p className="text-xs text-yellow-400/70 bg-yellow-500/5 border border-yellow-500/10 rounded-lg px-3 py-2">
+          ⚠ Store this key securely. It will not be displayed again after you close this dialog.
+        </p>
+        <Button onClick={onClose} className="w-full bg-[#f97316] hover:bg-[#ea6c0f] border-0 text-white">
+          I've saved it
+        </Button>
       </div>
     </div>
   );
 }
 
 // ── HOME PAGE ─────────────────────────────────────────────────────────────────
-function HomePage({ stats, loading, range, onRange }: { stats: Stats | null; loading: boolean; range: Range; onRange: (r: Range) => void }) {
-  const val = (n: number) => loading ? "..." : String(n);
+function HomePage({ stats, keyCount, loading, range, onRange }: { stats: Stats | null; keyCount: number; loading: boolean; range: Range; onRange: (r: Range) => void }) {
+  const val = (n: number) => loading ? "…" : String(n);
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -120,14 +131,13 @@ function HomePage({ stats, loading, range, onRange }: { stats: Stats | null; loa
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard dot="bg-blue-400" label="Today's Requests" value={val(stats?.todayRequests ?? 0)} icon={<FileText className="w-4 h-4 text-blue-400/50" />} />
         <StatCard dot="bg-green-400" label="Total Requests" value={val(stats?.totalRequests ?? 0)} icon={<LayoutDashboard className="w-4 h-4 text-green-400/50" />} />
-        <StatCard dot="bg-purple-400" label="Today's Tokens" value={val(0)} icon={<Cpu className="w-4 h-4 text-purple-400/50" />} />
+        <StatCard dot="bg-purple-400" label="Today's Tokens" value="0" icon={<Cpu className="w-4 h-4 text-purple-400/50" />} />
         <StatCard dot="bg-orange-400" label="Total Tokens" value="0" icon={<Cpu className="w-4 h-4 text-orange-400/50" />} />
         <StatCard dot="bg-yellow-400" label="Today's Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-yellow-400/50" />} />
         <StatCard dot="bg-red-400" label="Total Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-red-400/50" />} />
-        <StatCard dot="bg-cyan-400" label="My API Keys" value={stats ? "1" : "0"} icon={<Key className="w-4 h-4 text-cyan-400/50" />} />
+        <StatCard dot="bg-cyan-400" label="My API Keys" value={keyCount} icon={<Key className="w-4 h-4 text-cyan-400/50" />} />
         <StatCard dot="bg-pink-400" label="Total Invites" value="0" icon={<Users className="w-4 h-4 text-pink-400/50" />} />
       </div>
-      {/* Announcements */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -154,24 +164,20 @@ function HomePage({ stats, loading, range, onRange }: { stats: Stats | null; loa
 
 // ── DASHBOARD PAGE ────────────────────────────────────────────────────────────
 function DashboardPage({ stats, loading, range, onRange }: { stats: Stats | null; loading: boolean; range: Range; onRange: (r: Range) => void }) {
-  const val = (n: number) => loading ? "..." : String(n);
+  const val = (n: number) => loading ? "…" : String(n);
   const COLORS = ["#f97316", "#8b5cf6", "#06b6d4", "#22c55e", "#ec4899", "#eab308"];
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold text-white">Dashboard</h1>
-        <div className="flex items-center gap-3">
-          <RangeTabs value={range} onChange={onRange} />
-        </div>
+        <RangeTabs value={range} onChange={onRange} />
       </div>
-      {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard dot="bg-green-400" label="Balance" value="$0.00" />
         <StatCard dot="bg-orange-400" label="Total Cost" value="$0.00" />
         <StatCard dot="bg-blue-400" label="Total Tokens" value="0" />
         <StatCard dot="bg-red-400" label="Total Requests" value={val(stats?.rangeRequests ?? 0)} />
       </div>
-      {/* Rate Limits */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
         <h3 className="text-sm font-semibold text-white mb-4">Rate Limits</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -189,7 +195,6 @@ function DashboardPage({ stats, loading, range, onRange }: { stats: Stats | null
           ))}
         </div>
       </div>
-      {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
           <h3 className="text-sm font-semibold text-white mb-4">Token Distribution</h3>
@@ -202,7 +207,7 @@ function DashboardPage({ stats, loading, range, onRange }: { stats: Stats | null
                 <Tooltip formatter={(v) => [v, "Requests"]} contentStyle={{ background: "#1a1a2e", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} labelStyle={{ color: "rgba(255,255,255,0.7)" }} itemStyle={{ color: "#fff" }} />
               </PieChart>
             </ResponsiveContainer>
-          ) : <EmptyChart text="No model usage data available for analysis." />}
+          ) : <EmptyChart text="No model usage data available." />}
         </div>
         <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
           <h3 className="text-sm font-semibold text-white mb-4">Requests by Model</h3>
@@ -218,16 +223,12 @@ function DashboardPage({ stats, loading, range, onRange }: { stats: Stats | null
           ) : <EmptyChart text="No model aggregation data for this period." />}
         </div>
       </div>
-      <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Token Trend</h3>
-        <EmptyChart text="No trend data available for visualization." />
-      </div>
     </div>
   );
 }
 
 // ── USAGE LOGS PAGE ───────────────────────────────────────────────────────────
-function UsageLogsPage({ apiKey }: { apiKey: string }) {
+function UsageLogsPage() {
   const [range, setRange] = useState<Range>("today");
   const [modelFilter, setModelFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -240,10 +241,10 @@ function UsageLogsPage({ apiKey }: { apiKey: string }) {
     const params = new URLSearchParams({ range, page: String(page), pageSize: "20" });
     if (modelFilter) params.set("model", modelFilter);
     if (statusFilter) params.set("status", statusFilter);
-    const res = await apiFetch<LogsResponse>(`/api/user/logs?${params}`, apiKey);
+    const res = await apiFetch<LogsResponse>(`/api/user/logs?${params}`);
     setData(res);
     setLoading(false);
-  }, [apiKey, range, page, modelFilter, statusFilter]);
+  }, [range, page, modelFilter, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -257,11 +258,9 @@ function UsageLogsPage({ apiKey }: { apiKey: string }) {
           <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
         </button>
       </div>
-      {/* Filters */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2">
           <span className="text-xs text-white/50 font-medium uppercase tracking-wider">Filters</span>
-          <span className="text-xs bg-[#f97316]/20 text-[#f97316] px-1.5 py-0.5 rounded">1</span>
           <div className="ml-auto flex gap-2">
             <button onClick={() => { setModelFilter(""); setStatusFilter(""); setPage(1); }}
               className="text-xs text-white/40 hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/20 transition-colors">Reset</button>
@@ -290,7 +289,6 @@ function UsageLogsPage({ apiKey }: { apiKey: string }) {
           </div>
         </div>
       </div>
-      {/* Table */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -307,8 +305,8 @@ function UsageLogsPage({ apiKey }: { apiKey: string }) {
                 <tr><td colSpan={4} className="text-center py-12 text-white/30">Loading…</td></tr>
               ) : !data || data.logs.length === 0 ? (
                 <tr><td colSpan={4} className="text-center py-12 text-white/30">
-                  <p className="font-medium text-sm">No data</p>
-                  <p className="text-white/20 mt-1">No usage logs found</p>
+                  <p className="font-medium text-sm">No logs</p>
+                  <p className="text-white/20 mt-1">No usage logs found for this period</p>
                 </td></tr>
               ) : data.logs.map(log => (
                 <tr key={log.id} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
@@ -343,72 +341,177 @@ function UsageLogsPage({ apiKey }: { apiKey: string }) {
 }
 
 // ── API KEYS PAGE ─────────────────────────────────────────────────────────────
-function ApiKeysPage({ stats }: { stats: Stats | null }) {
+function ApiKeysPage({ keys, loadingKeys, onRefresh }: { keys: UserKey[]; loadingKeys: boolean; onRefresh: () => void }) {
+  const [creating, setCreating] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [newFullKey, setNewFullKey] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  const createKey = async () => {
+    setCreating(true);
+    const res = await apiFetch<{ key: UserKey }>("/api/user/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: newLabel.trim() || undefined }),
+    });
+    setCreating(false);
+    if (res?.key) {
+      setNewFullKey(res.key.key);
+      setShowCreate(false);
+      setNewLabel("");
+      onRefresh();
+    }
+  };
+
+  const toggleKey = async (id: string) => {
+    setTogglingId(id);
+    await apiFetch(`/api/user/keys/${id}/toggle`, { method: "PATCH" });
+    setTogglingId(null);
+    onRefresh();
+  };
+
+  const deleteKey = async (id: string) => {
+    if (!confirm("Delete this API key? This action cannot be undone.")) return;
+    setDeletingId(id);
+    await apiFetch(`/api/user/keys/${id}`, { method: "DELETE" });
+    setDeletingId(null);
+    onRefresh();
+  };
+
+  const filtered = keys.filter(k => k.label.toLowerCase().includes(search.toLowerCase()));
+  const activeCount = keys.filter(k => k.isActive).length;
+
   return (
     <div className="space-y-4">
-      <h1 className="text-lg font-bold text-white">API Keys</h1>
-      <div className="grid grid-cols-3 gap-4">
-        <StatCard dot="bg-orange-400" label="Total Keys" value={stats ? "1" : "0"} />
-        <StatCard dot="bg-green-400" label="Active" value={stats?.keyActive ? "1" : "0"} />
-        <StatCard dot="bg-yellow-400" label="Inactive" value={stats?.keyActive === false ? "1" : "0"} />
+      {newFullKey && <NewKeyModal fullKey={newFullKey} onClose={() => setNewFullKey(null)} />}
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-[#18181b] border border-white/10 rounded-2xl p-7 w-full max-w-md space-y-5">
+            <h2 className="text-base font-bold text-white">Create API Key</h2>
+            <div className="space-y-1.5">
+              <label className="text-xs text-white/50">Key name (optional)</label>
+              <Input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && !creating && createKey()}
+                placeholder="e.g. My App" className="bg-white/5 border-white/10 text-white placeholder:text-white/20 focus:border-[#f97316]/50" />
+              <p className="text-xs text-white/30">Defaults to "Key N" if left empty. Max 5 keys per account.</p>
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" onClick={() => setShowCreate(false)} className="flex-1 border-white/10 bg-transparent text-white/60 hover:text-white hover:bg-white/5">Cancel</Button>
+              <Button onClick={createKey} disabled={creating} className="flex-1 bg-[#f97316] hover:bg-[#ea6c0f] border-0 text-white">
+                {creating ? "Creating…" : "Create Key"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-white">API Keys</h1>
+        <Button onClick={() => setShowCreate(true)} disabled={keys.length >= 5}
+          className="bg-[#f97316] hover:bg-[#ea6c0f] border-0 text-white text-xs h-8 gap-1.5">
+          <Plus className="w-3.5 h-3.5" /> Create Key
+        </Button>
       </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <StatCard dot="bg-orange-400" label="Total Keys" value={keys.length} />
+        <StatCard dot="bg-green-400" label="Active" value={activeCount} />
+        <StatCard dot="bg-red-400" label="Inactive" value={keys.length - activeCount} />
+      </div>
+
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
           <div className="relative flex-1 max-w-xs">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/30" />
-            <input placeholder="Search keys…" className="w-full bg-white/5 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-white/20 focus:outline-none focus:border-white/20" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search keys…"
+              className="w-full bg-white/5 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-white/20 focus:outline-none focus:border-white/20" />
           </div>
+          <button onClick={onRefresh} disabled={loadingKeys} className="p-1.5 text-white/30 hover:text-white transition-colors">
+            <RefreshCw className={`w-4 h-4 ${loadingKeys ? "animate-spin" : ""}`} />
+          </button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-white/[0.06] text-white/40 uppercase tracking-wider">
-                <th className="text-left px-4 py-3 font-medium">Key Name</th>
+                <th className="text-left px-4 py-3 font-medium">Name</th>
                 <th className="text-left px-4 py-3 font-medium">Key</th>
                 <th className="text-left px-4 py-3 font-medium">Usage</th>
-                <th className="text-left px-4 py-3 font-medium">Created At</th>
-                <th className="text-left px-4 py-3 font-medium">Expire At</th>
+                <th className="text-left px-4 py-3 font-medium">Created</th>
                 <th className="text-left px-4 py-3 font-medium">Status</th>
                 <th className="text-left px-4 py-3 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {!stats ? (
-                <tr><td colSpan={7} className="text-center py-12 text-white/30">No API keys found</td></tr>
-              ) : (
-                <tr className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
-                  <td className="px-4 py-3 text-white/80 font-medium">{stats.keyLabel}</td>
+              {loadingKeys ? (
+                <tr><td colSpan={6} className="text-center py-12 text-white/30">Loading…</td></tr>
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={6} className="text-center py-16">
+                  <div className="space-y-3">
+                    <div className="w-12 h-12 bg-white/5 rounded-xl flex items-center justify-center mx-auto">
+                      <Key className="w-6 h-6 text-white/20" />
+                    </div>
+                    <p className="text-sm text-white/30 font-medium">{keys.length === 0 ? "No API keys yet" : "No matching keys"}</p>
+                    {keys.length === 0 && (
+                      <Button onClick={() => setShowCreate(true)} className="bg-[#f97316] hover:bg-[#ea6c0f] border-0 text-white text-xs h-8 gap-1.5">
+                        <Plus className="w-3.5 h-3.5" /> Create your first key
+                      </Button>
+                    )}
+                  </div>
+                </td></tr>
+              ) : filtered.map(k => (
+                <tr key={k.id} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+                  <td className="px-4 py-3 text-white/80 font-medium">{k.label}</td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1 font-mono text-white/60">
-                      {stats.keyMasked}
-                      <CopyBtn text={stats.keyMasked} />
+                    <div className="flex items-center gap-1 font-mono text-white/50">
+                      <span>{k.key}</span>
+                      <CopyBtn text={k.key} />
                     </div>
                   </td>
+                  <td className="px-4 py-3 text-white/40">{k.usageCount} req</td>
+                  <td className="px-4 py-3 text-white/40">{new Date(k.createdAt).toLocaleDateString()}</td>
                   <td className="px-4 py-3">
-                    <div className="space-y-1 w-28">
-                      <div className="flex justify-between text-white/40"><span>{stats.totalRequests}</span><span>∞</span></div>
-                      <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                        <div className="h-full bg-[#f97316] rounded-full" style={{ width: stats.totalRequests > 0 ? "20%" : "0%" }} />
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-white/40">{new Date(stats.keyCreatedAt).toLocaleDateString()}</td>
-                  <td className="px-4 py-3 text-white/40">Never Expires</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${stats.keyActive ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
-                      {stats.keyActive ? "Active" : "Inactive"}
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${k.isActive ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                      {k.isActive ? "Active" : "Inactive"}
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex gap-1.5">
-                      <button className="text-[10px] bg-white/5 hover:bg-white/10 px-2 py-1 rounded text-white/60 transition-colors">Import</button>
-                      <button className="text-[10px] bg-white/5 hover:bg-white/10 px-2 py-1 rounded text-white/60 transition-colors">Docs</button>
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => toggleKey(k.id)} disabled={togglingId === k.id}
+                        title={k.isActive ? "Deactivate" : "Activate"}
+                        className="p-1.5 rounded text-white/30 hover:text-white hover:bg-white/5 transition-colors disabled:opacity-50">
+                        {k.isActive ? <ToggleRight className="w-4 h-4 text-green-400" /> : <ToggleLeft className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => deleteKey(k.id)} disabled={deletingId === k.id}
+                        title="Delete" className="p-1.5 rounded text-white/30 hover:text-red-400 hover:bg-red-500/5 transition-colors disabled:opacity-50">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </td>
                 </tr>
-              )}
+              ))}
             </tbody>
           </table>
+        </div>
+        {keys.length >= 5 && (
+          <div className="px-4 py-3 border-t border-white/[0.06]">
+            <p className="text-xs text-yellow-400/70">Maximum 5 API keys per account reached. Delete an existing key to create a new one.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Usage instructions */}
+      <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
+        <h3 className="text-sm font-semibold text-white mb-3">How to use your API key</h3>
+        <p className="text-xs text-white/50 mb-3">Add the <code className="text-[#f97316] font-mono">X-Api-Key</code> header to your requests:</p>
+        <div className="bg-black/40 rounded-lg p-4 font-mono text-xs text-green-400 relative">
+          <pre className="overflow-x-auto whitespace-pre">{`curl https://your-domain.com/api/chat/stream \\
+  -H "X-Api-Key: sk-cc-..." \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"rc:/codex-pro|gpt-5.4","messages":[{"role":"user","content":"Hello"}]}'`}</pre>
         </div>
       </div>
     </div>
@@ -448,7 +551,7 @@ function ModelsPage() {
           </div>
         ))}
       </div>
-      <p className="text-xs text-white/30 text-center">Model IDs use format: <code className="text-[#f97316]">rc:&#123;channel&#125;|&#123;model&#125;</code> — e.g. <code className="text-[#f97316]">rc:/codex-pro|gpt-5.4</code></p>
+      <p className="text-xs text-white/30 text-center">Model IDs: <code className="text-[#f97316]">rc:&#123;channel&#125;|&#123;model&#125;</code> — e.g. <code className="text-[#f97316]">rc:/codex-pro|gpt-5.4</code></p>
     </div>
   );
 }
@@ -478,10 +581,6 @@ function SubscribePage() {
               Recharge Now
             </button>
           </div>
-          <p className="text-xs text-white/30 mt-2">$1 balance = ¥1.00 &nbsp;·&nbsp; Minimum $1 per top-up</p>
-        </div>
-        <div className="flex justify-end pt-2 border-t border-white/[0.06]">
-          <span className="text-2xl font-bold text-red-400">¥ {parseFloat(amount || "0").toFixed(2)}</span>
         </div>
       </div>
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-6">
@@ -548,23 +647,20 @@ function InvitePage({ userId }: { userId: string }) {
         <div className="px-5 py-4 border-b border-white/[0.06]">
           <div className="flex gap-4">
             <button className="text-sm text-[#f97316] border-b-2 border-[#f97316] pb-1 font-medium">Invitees</button>
-            <button className="text-sm text-white/40 hover:text-white/70 transition-colors">Rebates</button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-white/[0.06] text-white/40 uppercase tracking-wider">
-                <th className="text-left px-5 py-3 font-medium">Username</th>
-                <th className="text-left px-5 py-3 font-medium">Email</th>
-                <th className="text-left px-5 py-3 font-medium">Registered At</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td colSpan={3} className="text-center py-12 text-white/30">No invitees yet</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-white/[0.06] text-white/40 uppercase tracking-wider">
+              <th className="text-left px-5 py-3 font-medium">Username</th>
+              <th className="text-left px-5 py-3 font-medium">Email</th>
+              <th className="text-left px-5 py-3 font-medium">Registered At</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colSpan={3} className="text-center py-12 text-white/30">No invitees yet</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -611,33 +707,35 @@ export default function UserDashboard() {
   const { user } = useUser();
   const [collapsed, setCollapsed] = useState(false);
   const [nav, setNav] = useState("home");
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(STORAGE_KEY) ?? "");
   const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [keyError, setKeyError] = useState("");
+  const [statsLoading, setStatsLoading] = useState(false);
   const [range, setRange] = useState<Range>("today");
+  const [keys, setKeys] = useState<UserKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(true);
 
-  const loadStats = useCallback(async (key: string, r: Range) => {
-    if (!key) return;
-    setLoading(true);
-    const data = await apiFetch<Stats>(`/api/user/stats?range=${r}`, key);
-    setLoading(false);
-    if (!data) { setKeyError("Invalid or inactive API key"); setStats(null); }
-    else { setKeyError(""); setStats(data); }
+  const loadKeys = useCallback(async () => {
+    setKeysLoading(true);
+    const res = await apiFetch<{ keys: UserKey[] }>("/api/user/keys");
+    setKeys(res?.keys ?? []);
+    setKeysLoading(false);
   }, []);
 
-  useEffect(() => { if (apiKey) loadStats(apiKey, range); }, [apiKey, range, loadStats]);
+  const loadStats = useCallback(async (r: Range) => {
+    setStatsLoading(true);
+    const data = await apiFetch<Stats>(`/api/user/stats?range=${r}`);
+    setStats(data);
+    setStatsLoading(false);
+  }, []);
 
-  const saveKey = (k: string) => {
-    localStorage.setItem(STORAGE_KEY, k);
-    setApiKey(k);
-    setKeyError("");
-  };
+  useEffect(() => { loadKeys(); }, [loadKeys]);
+  useEffect(() => { loadStats(range); }, [range, loadStats]);
 
   const handleNav = (id: string) => {
-    if (id === "chat") { window.location.href = "/chat"; return; }
+    if (id === "chat") { window.open("/chat", "_blank"); return; }
     setNav(id);
   };
+
+  const navLabel = NAV.find(n => n.id === nav)?.label ?? nav;
 
   return (
     <div className="flex h-screen bg-[#0c0c10] text-white font-sans overflow-hidden"
@@ -666,20 +764,13 @@ export default function UserDashboard() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Topbar */}
         <header className="flex items-center justify-between px-6 py-3.5 border-b border-white/[0.07] shrink-0">
-          <span className="text-sm text-white/40 capitalize">{nav}</span>
+          <span className="text-sm text-white/40">{navLabel}</span>
           <div className="flex items-center gap-3">
-            {apiKey && !keyError && (
-              <button onClick={() => loadStats(apiKey, range)} disabled={loading}
-                className="p-1.5 rounded text-white/30 hover:text-white hover:bg-white/5 transition-colors">
-                <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-              </button>
-            )}
-            {keyError && apiKey && (
-              <button onClick={() => { localStorage.removeItem(STORAGE_KEY); setApiKey(""); setStats(null); setKeyError(""); }}
-                className="text-xs text-red-400 border border-red-500/20 px-2 py-1 rounded">Change Key</button>
-            )}
+            <button onClick={() => { loadStats(range); loadKeys(); }} disabled={statsLoading}
+              className="p-1.5 rounded text-white/30 hover:text-white hover:bg-white/5 transition-colors">
+              <RefreshCw className={`w-4 h-4 ${statsLoading ? "animate-spin" : ""}`} />
+            </button>
             <div className="flex items-center gap-2 pl-3 border-l border-white/[0.07]">
               <span className="text-xs text-white/40 hidden sm:block">{user?.primaryEmailAddress?.emailAddress}</span>
               <UserButton />
@@ -687,21 +778,16 @@ export default function UserDashboard() {
           </div>
         </header>
 
-        {/* Page content */}
-        {!apiKey ? (
-          <KeySetup onSave={saveKey} />
-        ) : (
-          <main className="flex-1 overflow-y-auto p-6">
-            {nav === "home" && <HomePage stats={stats} loading={loading} range={range} onRange={r => { setRange(r); loadStats(apiKey, r); }} />}
-            {nav === "dashboard" && <DashboardPage stats={stats} loading={loading} range={range} onRange={r => { setRange(r); loadStats(apiKey, r); }} />}
-            {nav === "logs" && <UsageLogsPage apiKey={apiKey} />}
-            {nav === "keys" && <ApiKeysPage stats={stats} />}
-            {nav === "models" && <ModelsPage />}
-            {nav === "subscribe" && <SubscribePage />}
-            {nav === "invite" && <InvitePage userId={user?.id ?? "00000000"} />}
-            {nav === "contact" && <ContactPage />}
-          </main>
-        )}
+        <main className="flex-1 overflow-y-auto p-6">
+          {nav === "home" && <HomePage stats={stats} keyCount={keys.length} loading={statsLoading} range={range} onRange={r => setRange(r)} />}
+          {nav === "dashboard" && <DashboardPage stats={stats} loading={statsLoading} range={range} onRange={r => setRange(r)} />}
+          {nav === "logs" && <UsageLogsPage />}
+          {nav === "keys" && <ApiKeysPage keys={keys} loadingKeys={keysLoading} onRefresh={loadKeys} />}
+          {nav === "models" && <ModelsPage />}
+          {nav === "subscribe" && <SubscribePage />}
+          {nav === "invite" && <InvitePage userId={user?.id ?? "00000000"} />}
+          {nav === "contact" && <ContactPage />}
+        </main>
       </div>
     </div>
   );
