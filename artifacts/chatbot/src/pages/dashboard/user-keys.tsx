@@ -15,6 +15,7 @@ type UserKey = {
   usageCount: number;
   lastUsedAt: string | null;
   createdAt: string;
+  clerkUserId: string | null;
 };
 
 export default function UserKeysPage() {
@@ -140,6 +141,7 @@ export default function UserKeysPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-medium">{k.label}</span>
                   {!k.isActive && <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-muted/40 text-muted-foreground">disabled</span>}
+                  {k.clerkUserId && <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">self-created</span>}
                 </div>
                 <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-sans">
                   <span className="font-mono">{k.key}</span>

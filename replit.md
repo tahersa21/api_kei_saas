@@ -1,6 +1,6 @@
-# CommandCode Chatbot
+# CommandCode API Gateway
 
-A professional AI management console with dual-provider support: **CommandCode** (CC) and **Right Code** (RC — right.codes). Supports real-time streaming responses with 12+ CC models and 58+ RC models across 7 channels. Supports image/vision attachments for all providers.
+A full-stack AI proxy platform with dual-provider support: **CommandCode** (CC) and **Right Code** (RC — right.codes). Supports real-time streaming responses with 12+ CC models and 58+ RC models across 7 channels. Supports image/vision attachments for all providers. Users self-register via Clerk and create their own API keys from a personal dashboard.
 
 ## Run & Operate
 
@@ -22,13 +22,16 @@ A professional AI management console with dual-provider support: **CommandCode**
 ## Where things live
 
 - `lib/api-spec/openapi.yaml` — API contract (source of truth)
-- `lib/db/src/schema/` — Drizzle DB schemas (providers, cc_keys, user_keys, request_logs)
+- `lib/db/src/schema/` — Drizzle DB schemas (providers, cc_keys, rc_keys, user_keys, request_logs, routing_rules)
 - `artifacts/api-server/src/routes/chat.ts` — CC + RC proxy routes (streaming SSE), vision builders
-- `artifacts/api-server/src/routes/admin.ts` — Admin CRUD: CC keys, user keys, providers, logs, overview
+- `artifacts/api-server/src/routes/admin.ts` — Admin CRUD: CC keys, RC keys, user keys, providers, logs, overview, routing rules
+- `artifacts/api-server/src/routes/user.ts` — User self-service: key CRUD (Clerk-authed), stats, logs
 - `artifacts/api-server/src/app.ts` — Express app setup (body parser limit: 25MB)
-- `artifacts/chatbot/src/pages/console.tsx` — **Main page** (`/`): API Console with sidebar, provider/key management, test chat
+- `artifacts/chatbot/src/pages/landing.tsx` — Landing page (`/`, public)
+- `artifacts/chatbot/src/pages/user-dashboard.tsx` — **User dashboard** (`/app`, Clerk-protected): 9-page self-service portal
+- `artifacts/chatbot/src/pages/console.tsx` — Admin API Console (`/taherlt`, password-only)
 - `artifacts/chatbot/src/pages/chat.tsx` — Full chatbot UI (`/chat`)
-- `artifacts/chatbot/src/pages/dashboard/` — Admin dashboard (`/dashboard`)
+- `artifacts/chatbot/src/pages/dashboard/` — Admin stats dashboard (`/dashboard`, password-only)
 - `artifacts/chatbot/src/hooks/use-chat-stream.ts` — SSE streaming hook, ImageAttachment type
 - `artifacts/chatbot/src/hooks/use-rightcode-key.ts` — RC key localStorage hook
 - `artifacts/chatbot/src/hooks/use-rc-pool-status.ts` — RC server pool status hook
@@ -46,27 +49,36 @@ A professional AI management console with dual-provider support: **CommandCode**
 - TCP Nagle disabled on SSE connections (`socket.setNoDelay(true)`) for immediate chunk delivery
 - Elapsed time timer measures API response time only (stops when last token arrives, before typewriter animation)
 - Admin auth: JWT token in localStorage (`cc_admin_token`), issued by `POST /api/admin/login`
-- RC pool status: `GET /api/chat/rc-pool-status` — returns `{ hasPoolKeys: boolean }`
+- RC pool status: `GET /api/chat/rc-pool-status` — returns `{ active: number }` — frontend maps `active > 0` → `hasPoolKeys`
 
 ## Product
 
-### API Console (`/`) — Main page
-- 3-column layout: sidebar nav | main content | compact test chat panel (always visible)
-- **Admin unlock**: lock icon in header opens login dialog; features gated behind JWT auth
-- Lock banner at top when not authenticated
+### Routes overview
 
-**Sidebar sections:**
-- **Providers** — built-in CC + RC cards, custom providers from DB (type: text/video/audio); add/toggle/delete
-- **API Keys** — create `sk-cc-*` user keys for external websites; copy key + integration snippet
-- **CC Keys** — add/remove/test/enable CommandCode API keys (server pool)
-- **RC Keys** — add/remove Right Code API keys (server pool)
-- **Logs** — link to `/dashboard` logs page
+| Route | Access | Purpose |
+|---|---|---|
+| `/` | Public | Landing page (signed-in → redirects to `/app`) |
+| `/sign-in`, `/sign-up` | Public | Clerk auth pages |
+| `/app` | Clerk login required | **User dashboard** — self-service API key management |
+| `/chat` | Public | Full chatbot UI (CC + RC streaming) |
+| `/taherlt` | `ADMIN_PASSWORD` | Secret admin API console |
+| `/dashboard` | `ADMIN_PASSWORD` | Admin stats, CC/RC key pools, logs |
 
-**Test Chat panel (right side):**
-- CC/RC toggle + model selector grouped by channel/family
-- Streaming messages with typewriter animation
-- Inline error display with Claude Official → AWS warning
-- RC key status indicator (user key / server pool / no key)
+### User Dashboard (`/app`) — Self-service portal
+- Protected by Clerk auth; signed-out users redirected to `/sign-in`
+- **Home** — 8 stat cards (today's requests, total, tokens, keys) + announcements
+- **Dashboard** — range filter + 4 stat cards + rate limits + charts (Pie + Bar)
+- **Usage Logs** — paginated table with date/model/status filters
+- **API Keys** — create up to 5 `sk-cc-*` keys; full key shown once in modal; toggle/delete
+- **Models** — all available CC + RC models listed by channel
+- **Subscribe** — balance top-up + package plans
+- **Invite & Earn** — referral code + link
+- **Contact** — support links
+
+### Admin API Console (`/taherlt`) — Secret URL
+- 3-column layout: sidebar nav | main content | compact test chat panel
+- Password-only auth (no email); JWT stored in localStorage
+- Manages: Providers, API Keys (issue to users), CC Keys pool, RC Keys pool
 
 ### Chatbot (`/chat`) — Full chat UI
 - Real-time AI chat with streaming responses
@@ -80,10 +92,11 @@ A professional AI management console with dual-provider support: **CommandCode**
 - **Image/media upload** — paperclip button; client-side compression before upload
 
 ### Admin Dashboard (`/dashboard`)
-- Login protected with `ADMIN_PASSWORD` env var
+- Login protected with `ADMIN_PASSWORD` env var (same JWT as console)
 - **Overview** — requests today/week/total, active keys, top models chart
 - **CC Keys** — add/remove/test/enable CommandCode API keys (pool)
-- **User Keys** — create/revoke `sk-cc-*` keys to issue to users
+- **RC Keys** — add/remove Right Code API keys (pool)
+- **User Keys** — view all user keys; "self-created" badge for Clerk-registered users
 - **Logs** — full paginated request log with status/duration/key labels
 
 ## User preferences
@@ -93,10 +106,11 @@ A professional AI management console with dual-provider support: **CommandCode**
 ## Architecture (dual-provider)
 
 ```
-[CC mode]  User → POST /api/chat/stream → Round-Robin CC Key Pool → CommandCode API
-[RC mode]  User → [RC key header] → POST /api/chat/stream → right.codes/{channel}/v1/...
-Admin      → [ADMIN_PASSWORD] → /dashboard → manage CC keys, user keys, logs
-Console    → [ADMIN_PASSWORD] → / → manage providers, API keys, CC/RC key pools
+User (Clerk)  → /app  → GET /api/user/keys (create/manage own sk-cc-* keys)
+User          → X-Api-Key: sk-cc-* → POST /api/chat/stream → CC or RC upstream
+[CC mode]     → Round-Robin CC Key Pool → CommandCode API
+[RC mode]     → right.codes/{channel}/v1/...
+Admin         → ADMIN_PASSWORD → /taherlt (console) + /dashboard (stats)
 ```
 
 ### Right Code channels & routing
@@ -122,7 +136,7 @@ RC model IDs are encoded as `rc:{prefix}|{modelName}` — e.g. `rc:/codex-pro|gp
 
 ### RC key pool
 - RC keys stored in `rc_keys` DB table (active/inactive)
-- `GET /api/chat/rc-pool-status` returns `{ hasPoolKeys: boolean }` — used by frontend to show "server key active"
+- `GET /api/chat/rc-pool-status` returns `{ active: number }` — frontend converts `active > 0` to `hasPoolKeys` to show "server key active"
 - User can also supply their own RC key via settings (stored in localStorage)
 
 ## Database schema
@@ -131,10 +145,10 @@ RC model IDs are encoded as `rc:{prefix}|{modelName}` — e.g. `rc:/codex-pro|gp
 |---|---|
 | `cc_keys` | CommandCode API key pool (round-robin) |
 | `rc_keys` | Right Code API key pool |
-| `user_keys` | Issued `sk-cc-*` keys for external users |
+| `user_keys` | `sk-cc-*` keys — user self-created (has `clerk_user_id`) or admin-issued |
 | `request_logs` | All chat requests (model, elapsed, key used, status) |
 | `providers` | Custom AI providers (name, slug, type, baseUrl, authMethod, channels, notes) |
-| `sessions` | Express session store |
+| `routing_rules` | Dynamic routing rules for model/provider selection |
 
 `providers.type` values: `text` | `video` | `audio`
 
