@@ -15,6 +15,7 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Stats = {
   totalRequests: number; rangeRequests: number; todayRequests: number;
+  totalTokens: number; todayTokens: number;
   topModels: { model: string; count: number }[];
   recentLogs: { model: string; status: string; elapsedMs: number | null; createdAt: string }[];
 };
@@ -135,8 +136,8 @@ function HomePage({ stats, keyCount, creditBalance, loading, range, onRange }: {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard dot="bg-blue-400" label="Today's Requests" value={val(stats?.todayRequests ?? 0)} icon={<FileText className="w-4 h-4 text-blue-400/50" />} />
         <StatCard dot="bg-green-400" label="Total Requests" value={val(stats?.totalRequests ?? 0)} icon={<LayoutDashboard className="w-4 h-4 text-green-400/50" />} />
-        <StatCard dot="bg-purple-400" label="Today's Tokens" value="0" icon={<Cpu className="w-4 h-4 text-purple-400/50" />} />
-        <StatCard dot="bg-orange-400" label="Total Tokens" value="0" icon={<Cpu className="w-4 h-4 text-orange-400/50" />} />
+        <StatCard dot="bg-purple-400" label="Today's Tokens" value={loading ? "…" : (stats?.todayTokens ?? 0).toLocaleString()} icon={<Cpu className="w-4 h-4 text-purple-400/50" />} />
+        <StatCard dot="bg-orange-400" label="Total Tokens" value={loading ? "…" : (stats?.totalTokens ?? 0).toLocaleString()} icon={<Cpu className="w-4 h-4 text-orange-400/50" />} />
         <StatCard dot="bg-yellow-400" label="Today's Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-yellow-400/50" />} />
         <StatCard dot="bg-red-400" label="Total Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-red-400/50" />} />
         <StatCard dot="bg-cyan-400" label="My API Keys" value={keyCount} icon={<Key className="w-4 h-4 text-cyan-400/50" />} />

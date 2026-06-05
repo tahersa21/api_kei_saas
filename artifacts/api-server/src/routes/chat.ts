@@ -331,6 +331,26 @@ async function handleCodexResponses(req: import("express").Request, res: import(
     return;
   }
 
+  const startTime = Date.now();
+
+  const logRequest = (status: "ok" | "error", tokensIn = 0, tokensOut = 0, errorMsg?: string) => {
+    const elapsedMs = Date.now() - startTime;
+    const ops: Promise<unknown>[] = [
+      db.insert(requestLogsTable).values({
+        id: randomUUID(), userKeyId: userKeyId ?? null, ccKeyId: null,
+        model: requestedModel, elapsedMs, status,
+        tokensIn: tokensIn || null, tokensOut: tokensOut || null,
+        errorMsg: errorMsg?.slice(0, 255) ?? null,
+      }),
+    ];
+    if (userKeyId) {
+      ops.push(db.update(userKeysTable)
+        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
+        .where(eq(userKeysTable.id, userKeyId)));
+    }
+    Promise.all(ops).catch(() => {});
+  };
+
   try {
     const fwdHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -350,28 +370,45 @@ async function handleCodexResponses(req: import("express").Request, res: import(
       body: JSON.stringify(req.body),
     });
 
-    if (userKeyId) {
-      db.update(userKeysTable)
-        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
-        .where(eq(userKeysTable.id, userKeyId))
-        .catch(() => {});
-    }
-
     const ct = upstream.headers.get("content-type") || "application/json";
     res.status(upstream.status).setHeader("content-type", ct);
     if (!upstream.ok || !upstream.body) {
       const text = await upstream.text();
+      logRequest("error", 0, 0, text.slice(0, 255));
       res.send(text); return;
     }
+
     const reader = upstream.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+        sseBuffer += decoder.decode(value, { stream: true });
+      }
+    } catch (streamErr) {
+      logRequest("error");
+      req.log.error({ err: streamErr }, "Codex responses stream error");
+      if (!res.headersSent) res.status(500).json({ error: { message: String(streamErr), type: "api_error" } });
+      else res.end();
+      return;
     }
+
+    // Extract token usage from SSE stream (response.completed event)
+    let tokensIn = 0;
+    let tokensOut = 0;
+    const usageMatch = sseBuffer.match(/"input_tokens"\s*:\s*(\d+)/);
+    const usageOutMatch = sseBuffer.match(/"output_tokens"\s*:\s*(\d+)/);
+    if (usageMatch) tokensIn = parseInt(usageMatch[1], 10);
+    if (usageOutMatch) tokensOut = parseInt(usageOutMatch[1], 10);
+
+    logRequest("ok", tokensIn, tokensOut);
     res.end();
   } catch (err) {
     req.log.error({ err }, "Codex responses proxy error");
+    logRequest("error");
     if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } });
     else res.end();
   }

@@ -98,14 +98,14 @@ router.get("/user/stats", async (req, res) => {
   const keyIds = userKeys.map(k => k.id);
 
   if (keyIds.length === 0) {
-    res.json({ totalRequests: 0, rangeRequests: 0, todayRequests: 0, topModels: [], recentLogs: [] });
+    res.json({ totalRequests: 0, rangeRequests: 0, todayRequests: 0, totalTokens: 0, todayTokens: 0, topModels: [], recentLogs: [] });
     return;
   }
 
   const { start, end } = dateRange(req.query.range as string | undefined);
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
 
-  const [totalRes, rangeRes, todayRes, topModels, recentLogs] = await Promise.all([
+  const [totalRes, rangeRes, todayRes, totalTokensRes, todayTokensRes, topModels, recentLogs] = await Promise.all([
     db.select({ c: count() }).from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds)),
     db.select({ c: count() }).from(requestLogsTable).where(
       and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, start), lte(requestLogsTable.createdAt, end))
@@ -113,6 +113,10 @@ router.get("/user/stats", async (req, res) => {
     db.select({ c: count() }).from(requestLogsTable).where(
       and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, todayStart))
     ),
+    db.select({ t: sql<number>`coalesce(sum(coalesce(${requestLogsTable.tokensIn},0) + coalesce(${requestLogsTable.tokensOut},0)),0)` })
+      .from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds)),
+    db.select({ t: sql<number>`coalesce(sum(coalesce(${requestLogsTable.tokensIn},0) + coalesce(${requestLogsTable.tokensOut},0)),0)` })
+      .from(requestLogsTable).where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, todayStart))),
     db.select({ model: requestLogsTable.model, c: count() })
       .from(requestLogsTable)
       .where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, start), lte(requestLogsTable.createdAt, end)))
@@ -130,6 +134,8 @@ router.get("/user/stats", async (req, res) => {
     totalRequests: Number(totalRes[0]?.c ?? 0),
     rangeRequests: Number(rangeRes[0]?.c ?? 0),
     todayRequests: Number(todayRes[0]?.c ?? 0),
+    totalTokens: Number(totalTokensRes[0]?.t ?? 0),
+    todayTokens: Number(todayTokensRes[0]?.t ?? 0),
     topModels: topModels.map(r => ({ model: r.model, count: Number(r.c) })),
     recentLogs,
   });

@@ -10,6 +10,8 @@ export const requestLogsTable = pgTable("request_logs", {
   elapsedMs: integer("elapsed_ms"),
   status: text("status").notNull().default("ok"),
   errorMsg: text("error_msg"),
+  tokensIn: integer("tokens_in"),
+  tokensOut: integer("tokens_out"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
