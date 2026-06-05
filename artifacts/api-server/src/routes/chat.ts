@@ -199,6 +199,7 @@ router.get("/proxy/claude/v1/models", (_req, res) => {
   res.json({
     object: "list",
     data: [
+      { id: "claude-opus-4-8",   object: "model", created: 1700000000, owned_by: "anthropic" },
       { id: "claude-opus-4-5",   object: "model", created: 1700000000, owned_by: "anthropic" },
       { id: "claude-sonnet-4-5", object: "model", created: 1700000000, owned_by: "anthropic" },
       { id: "claude-haiku-3-5",  object: "model", created: 1700000000, owned_by: "anthropic" },

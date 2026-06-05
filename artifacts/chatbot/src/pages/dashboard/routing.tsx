@@ -169,8 +169,8 @@ function RoutingProviderRow({
           </select>
         </div>
 
-        {/* Key picker for custom */}
-        {entry.providerType === "custom" && entry.providerId && poolKeys.length > 0 && (
+        {/* Key picker OR direct API key entry for custom */}
+        {entry.providerType === "custom" && entry.providerId && poolKeys.length > 0 ? (
           <div className="flex items-center gap-2">
             <span className="text-[9px] uppercase tracking-wider text-muted-foreground/40 w-16 flex-none">Key</span>
             <select value={selectedKeyId} onChange={e => {
@@ -181,6 +181,34 @@ function RoutingProviderRow({
               {poolKeys.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
             </select>
           </div>
+        ) : entry.providerType === "custom" && (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] uppercase tracking-wider text-muted-foreground/40 w-16 flex-none">API Key</span>
+              <Input
+                type="password"
+                value={entry.apiKey ?? ""}
+                onChange={e => onChange({ ...entry, apiKey: e.target.value || undefined })}
+                placeholder="sk-… أو أي مفتاح للمزود"
+                className="flex-1 h-7 text-xs font-mono bg-background/60"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] uppercase tracking-wider text-muted-foreground/40 w-16 flex-none">Base URL</span>
+              <Input
+                value={entry.apiBaseUrl ?? ""}
+                onChange={e => onChange({ ...entry, apiBaseUrl: e.target.value || undefined })}
+                placeholder="https://api.anthropic.com  أو  https://api.openai.com"
+                className="flex-1 h-7 text-xs font-mono bg-background/60"
+                dir="ltr"
+              />
+            </div>
+            {(!entry.apiKey || !entry.apiBaseUrl) && (
+              <p className="text-[9px] text-amber-500/70 font-sans mr-[4.5rem]">
+                ⚠ يجب تحديد API Key وBase URL لكي تعمل القاعدة
+              </p>
+            )}
+          </>
         )}
 
         {/* Model ID */}
