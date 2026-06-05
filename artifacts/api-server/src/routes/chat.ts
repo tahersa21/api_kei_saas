@@ -396,22 +396,27 @@ async function handleCodexResponses(req: import("express").Request, res: import(
       return;
     }
 
-    // Extract token usage from SSE stream
+    // Extract token usage by parsing each SSE data line as JSON
     let tokensIn = 0;
     let tokensOut = 0;
-    // Log last 800 chars to see the usage event format
-    req.log.info({ tail: sseBuffer.slice(-800) }, "codex-responses: SSE tail for token debug");
-    // Try Responses API format: input_tokens / output_tokens
-    const mIn = sseBuffer.match(/"input_tokens"\s*:\s*(\d+)/);
-    const mOut = sseBuffer.match(/"output_tokens"\s*:\s*(\d+)/);
-    // Try Chat Completions format: prompt_tokens / completion_tokens
-    const mPrompt = sseBuffer.match(/"prompt_tokens"\s*:\s*(\d+)/);
-    const mCompletion = sseBuffer.match(/"completion_tokens"\s*:\s*(\d+)/);
-    if (mIn) tokensIn = parseInt(mIn[1], 10);
-    else if (mPrompt) tokensIn = parseInt(mPrompt[1], 10);
-    if (mOut) tokensOut = parseInt(mOut[1], 10);
-    else if (mCompletion) tokensOut = parseInt(mCompletion[1], 10);
-    req.log.info({ tokensIn, tokensOut }, "codex-responses: parsed tokens");
+    for (const line of sseBuffer.split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      const raw = line.slice(5).trim();
+      if (!raw || raw === "[DONE]") continue;
+      try {
+        const ev = JSON.parse(raw) as {
+          response?: { usage?: { input_tokens?: number; output_tokens?: number } };
+          usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number };
+        };
+        const u = ev?.response?.usage ?? ev?.usage ?? null;
+        if (u) {
+          if (u.input_tokens != null) tokensIn = u.input_tokens;
+          if (u.output_tokens != null) tokensOut = u.output_tokens;
+          if ((u as { prompt_tokens?: number }).prompt_tokens != null) tokensIn = (u as { prompt_tokens?: number }).prompt_tokens!;
+          if ((u as { completion_tokens?: number }).completion_tokens != null) tokensOut = (u as { completion_tokens?: number }).completion_tokens!;
+        }
+      } catch { /* not valid JSON, skip */ }
+    }
 
     logRequest("ok", tokensIn, tokensOut);
     res.end();
