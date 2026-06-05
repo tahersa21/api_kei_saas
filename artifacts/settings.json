@@ -3,5 +3,25 @@
   "maxKeysPerUser": 5,
   "registrationsEnabled": true,
   "siteName": "CommandCode",
-  "maintenanceMode": false
+  "maintenanceMode": false,
+  "modelOverrides": {},
+  "userCredits": {
+    "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": 0
+  },
+  "creditTransactions": {
+    "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": [
+      {
+        "id": "1780684511294-kuka7",
+        "delta": 500,
+        "note": "Test grant",
+        "createdAt": "2026-06-05T18:35:11.294Z"
+      },
+      {
+        "id": "1780684521587-ybklz",
+        "delta": -500,
+        "note": "Reset test",
+        "createdAt": "2026-06-05T18:35:21.587Z"
+      }
+    ]
+  }
 }

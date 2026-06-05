@@ -7,7 +7,7 @@ import { signAdminToken, adminAuthMiddleware } from "../lib/admin-auth";
 import { testCcKey, invalidateCcKeyCache } from "../lib/key-pool";
 import { invalidateRcKeyCache } from "../lib/rc-pool";
 import { getAllRpmStats } from "../lib/rate-limiter";
-import { getSettings, updateSettings, setModelOverride } from "../lib/settings";
+import { getSettings, updateSettings, setModelOverride, getUserCredit, adjustUserCredit, getUserTransactions } from "../lib/settings";
 import { getUserRpmUsage } from "../lib/user-rate-limiter";
 
 const router = Router();
@@ -306,12 +306,77 @@ router.get("/admin/users", async (_req, res) => {
       lastSignInAt: u.last_sign_in_at,
       keys: keysByUser.get(u.id) ?? [],
       totalUsage: (keysByUser.get(u.id) ?? []).reduce((s, k) => s + k.usageCount, 0),
+      creditBalance: getUserCredit(u.id),
     }));
 
     res.json({ users });
   } catch {
     res.status(502).json({ error: "Failed to fetch users" });
   }
+});
+
+// ── Credit Management ─────────────────────────────────────────────────────────
+
+router.post("/admin/users/:clerkId/credits", (req, res) => {
+  const { clerkId } = req.params;
+  const { delta, note } = req.body as { delta?: number; note?: string };
+  if (typeof delta !== "number" || !Number.isFinite(delta)) {
+    res.status(400).json({ error: "delta must be a finite number" });
+    return;
+  }
+  const settings = adjustUserCredit(clerkId, Math.round(delta), note ?? (delta >= 0 ? "Admin grant" : "Admin deduction"));
+  res.json({ balance: settings.userCredits[clerkId] ?? 0 });
+});
+
+router.get("/admin/users/:clerkId/credits", (req, res) => {
+  const { clerkId } = req.params;
+  res.json({ balance: getUserCredit(clerkId), transactions: getUserTransactions(clerkId) });
+});
+
+// Per-user usage breakdown from request logs
+router.get("/admin/users/:clerkId/usage", async (req, res) => {
+  const { clerkId } = req.params;
+  const keys = await db.select({ id: userKeysTable.id }).from(userKeysTable).where(eq(userKeysTable.clerkUserId, clerkId));
+  if (keys.length === 0) { res.json({ total: 0, today: 0, week: 0, models: [], daily: [] }); return; }
+
+  const keyIds = keys.map(k => k.id);
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const last14 = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+
+  const [[totalRow], [todayRow], [weekRow], modelRows, dailyRows] = await Promise.all([
+    db.select({ c: count() }).from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds)),
+    db.select({ c: count() }).from(requestLogsTable).where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, todayStart))),
+    db.select({ c: count() }).from(requestLogsTable).where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, weekAgo))),
+    db.select({ model: requestLogsTable.model, c: count() })
+      .from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds))
+      .groupBy(requestLogsTable.model).orderBy(desc(count())).limit(10),
+    db.select({
+      day: sql<string>`date_trunc('day', ${requestLogsTable.createdAt})::date::text`,
+      total: count(),
+      errors: sql<number>`sum(case when ${requestLogsTable.status} = 'error' then 1 else 0 end)`,
+    }).from(requestLogsTable)
+      .where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, last14)))
+      .groupBy(sql`date_trunc('day', ${requestLogsTable.createdAt})`)
+      .orderBy(sql`date_trunc('day', ${requestLogsTable.createdAt})`),
+  ]);
+
+  const seriesMap = new Map(dailyRows.map(r => [r.day, r]));
+  const daily: { date: string; requests: number; errors: number }[] = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+    const k = d.toISOString().split("T")[0]!;
+    const row = seriesMap.get(k);
+    daily.push({ date: k, requests: row ? Number(row.total) : 0, errors: row ? Number(row.errors) : 0 });
+  }
+
+  res.json({
+    total: Number(totalRow?.c ?? 0),
+    today: Number(todayRow?.c ?? 0),
+    week: Number(weekRow?.c ?? 0),
+    models: modelRows.map(r => ({ model: r.model, count: Number(r.c) })),
+    daily,
+  });
 });
 
 // ── Settings ──────────────────────────────────────────────────────────────────
