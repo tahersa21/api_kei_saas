@@ -7,7 +7,7 @@ import { signAdminToken, adminAuthMiddleware } from "../lib/admin-auth";
 import { testCcKey, invalidateCcKeyCache } from "../lib/key-pool";
 import { invalidateRcKeyCache } from "../lib/rc-pool";
 import { getAllRpmStats } from "../lib/rate-limiter";
-import { getSettings, updateSettings } from "../lib/settings";
+import { getSettings, updateSettings, setModelOverride } from "../lib/settings";
 import { getUserRpmUsage } from "../lib/user-rate-limiter";
 
 const router = Router();
@@ -640,6 +640,37 @@ router.patch("/admin/routing-rules/:id", async (req, res) => {
 router.delete("/admin/routing-rules/:id", async (req, res) => {
   await db.delete(routingRulesTable).where(eq(routingRulesTable.id, req.params.id));
   res.json({ ok: true });
+});
+
+// ── Model Overrides ───────────────────────────────────────────────────────────
+
+// GET /admin/model-overrides — return current overrides map + settings
+router.get("/admin/model-overrides", (_req, res) => {
+  const { modelOverrides } = getSettings();
+  res.json({ overrides: modelOverrides });
+});
+
+// PATCH /admin/model-overrides/:modelId — set/merge an override
+router.patch("/admin/model-overrides/:modelId", (req, res) => {
+  const modelId = decodeURIComponent(req.params.modelId);
+  const { hidden, displayName, price } = req.body as {
+    hidden?: boolean;
+    displayName?: string;
+    price?: { input: number; output: number } | null;
+  };
+  const patch: import("../lib/settings.js").ModelOverride = {};
+  if (hidden !== undefined) patch.hidden = hidden;
+  if (displayName !== undefined) patch.displayName = displayName || undefined;
+  if (price !== undefined) patch.price = price ?? undefined;
+  const updated = setModelOverride(modelId, patch);
+  res.json({ overrides: updated.modelOverrides });
+});
+
+// DELETE /admin/model-overrides/:modelId — clear override entirely
+router.delete("/admin/model-overrides/:modelId", (req, res) => {
+  const modelId = decodeURIComponent(req.params.modelId);
+  const updated = setModelOverride(modelId, null);
+  res.json({ overrides: updated.modelOverrides });
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

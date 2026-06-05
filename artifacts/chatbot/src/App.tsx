@@ -25,6 +25,7 @@ import UsersPage from "@/pages/dashboard/users";
 import SettingsPage from "@/pages/dashboard/settings";
 import RoutingPage from "@/pages/dashboard/routing";
 import PlaygroundPage from "@/pages/dashboard/playground";
+import ModelsPage from "@/pages/dashboard/models";
 import { useAdminAuth } from "@/context/admin-auth";
 
 const queryClient = new QueryClient();
@@ -247,6 +248,13 @@ function Router() {
         {() => (
           <DashboardGuard>
             <DashboardLayout><PlaygroundPage /></DashboardLayout>
+          </DashboardGuard>
+        )}
+      </Route>
+      <Route path="/dashboard/models">
+        {() => (
+          <DashboardGuard>
+            <DashboardLayout><ModelsPage /></DashboardLayout>
           </DashboardGuard>
         )}
       </Route>

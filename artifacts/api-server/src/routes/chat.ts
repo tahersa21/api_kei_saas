@@ -322,7 +322,13 @@ router.get("/chat/models", async (req, res) => {
     res.json({ models: CC_MODELS_FALLBACK });
     return;
   }
-  const models = await fetchCcModels(apiKey);
+  const { getSettings } = await import("../lib/settings.js");
+  const overrides = getSettings().modelOverrides;
+  const allModels = await fetchCcModels(apiKey);
+  const models = allModels
+    .filter(m => !overrides[m.id]?.hidden)
+    .map(m => overrides[m.id]?.displayName ? { ...m, name: overrides[m.id].displayName! } : m)
+    .map(m => overrides[m.id]?.price ? { ...m, price: overrides[m.id].price } : m);
   res.json({ models });
 });
 
@@ -339,7 +345,13 @@ router.get("/chat/rc-pool-status", async (_req, res) => {
 // ── GET /chat/rc-models — Right Code models (public, cached 10 min) ──────────
 router.get("/chat/rc-models", async (req, res) => {
   try {
-    const models = await fetchRcModels();
+    const { getSettings } = await import("../lib/settings.js");
+    const overrides = getSettings().modelOverrides;
+    const allModels = await fetchRcModels();
+    const models = allModels
+      .filter(m => !overrides[m.id]?.hidden)
+      .map(m => overrides[m.id]?.displayName ? { ...m, name: overrides[m.id].displayName! } : m)
+      .map(m => overrides[m.id]?.price ? { ...m, price: overrides[m.id].price } : m);
     res.json({ models });
   } catch (err) {
     req.log.error({ err }, "Failed to fetch Right Code models");

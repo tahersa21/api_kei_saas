@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useAdminAuth } from "@/context/admin-auth";
 import {
   Terminal, LayoutDashboard, Key, Users, ScrollText, LogOut, ChevronRight,
-  Server, Globe, UserCircle, Settings, GitBranch, FlaskConical,
+  Server, Globe, UserCircle, Settings, GitBranch, FlaskConical, Cpu,
 } from "lucide-react";
 
 const NAV = [
@@ -13,6 +13,7 @@ const NAV = [
   { href: "/dashboard/rc-keys", label: "RC Keys", icon: Server },
   { href: "/dashboard/user-keys", label: "User Keys", icon: Users },
   { href: "/dashboard/providers", label: "Providers", icon: Globe },
+  { href: "/dashboard/models", label: "Models", icon: Cpu },
   { href: "/dashboard/routing", label: "Routing", icon: GitBranch },
   { href: "/dashboard/playground", label: "Playground", icon: FlaskConical },
   { href: "/dashboard/logs", label: "Logs", icon: ScrollText },
