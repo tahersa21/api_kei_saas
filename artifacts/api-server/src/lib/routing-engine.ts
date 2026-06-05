@@ -19,20 +19,55 @@ type RouteAttemptResult =
   | { ok: true; route: ResolvedRoute }
   | { ok: false; reason: "no_rules" | "all_rate_limited" | "inactive" };
 
+// ── Rule matching ────────────────────────────────────────────────────────────
+
+type MatchedRule = Awaited<ReturnType<typeof db.select>>[number] & {
+  providers: RoutingProviderEntry[];
+  isActive: boolean;
+  name: string;
+};
+
 /**
- * Resolve which provider + model to use for a given routing rule name.
- * Returns the first non-rate-limited provider in priority order.
- * Returns null if no matching active rule or all providers rate-limited.
+ * Find the best active routing rule for a given model name.
+ *
+ * Priority (highest → lowest):
+ *  1. Exact match:   rule.name === modelName
+ *  2. Contains:      modelName includes rule.name  (e.g. "codex" matches "gpt-5.3-codex")
+ *  3. Default:       rule.name === "_default"
  */
-export async function resolveRoute(ruleName: string): Promise<RouteAttemptResult> {
-  const rows = await db
+async function findBestRule(modelName: string): Promise<MatchedRule | null> {
+  const allActive = (await db
     .select()
     .from(routingRulesTable)
-    .where(eq(routingRulesTable.name, ruleName))
-    .limit(1);
+    .where(eq(routingRulesTable.isActive, true))) as MatchedRule[];
 
-  const rule = rows[0];
-  if (!rule || !rule.isActive) return { ok: false, reason: rule ? "inactive" : "no_rules" };
+  // 1. Exact
+  const exact = allActive.find(r => r.name === modelName);
+  if (exact) return exact;
+
+  // 2. Contains — longest match wins to avoid ambiguity
+  const containing = allActive
+    .filter(r => r.name !== "_default" && modelName.toLowerCase().includes(r.name.toLowerCase()))
+    .sort((a, b) => b.name.length - a.name.length);
+  if (containing[0]) return containing[0];
+
+  // 3. Default fallback
+  const def = allActive.find(r => r.name === "_default");
+  return def ?? null;
+}
+
+// ── resolveRoute ─────────────────────────────────────────────────────────────
+
+/**
+ * Resolve which provider + model to use for a given model/rule name.
+ *
+ * Matching priority: exact rule name → partial (model contains rule name) → _default rule.
+ * Returns the first non-rate-limited provider in priority order.
+ */
+export async function resolveRoute(ruleName: string): Promise<RouteAttemptResult> {
+  const rule = await findBestRule(ruleName);
+
+  if (!rule) return { ok: false, reason: "no_rules" };
 
   const sorted = [...rule.providers].sort((a, b) => a.priority - b.priority);
 
@@ -57,6 +92,8 @@ export async function resolveRoute(ruleName: string): Promise<RouteAttemptResult
   return { ok: false, reason: "all_rate_limited" };
 }
 
+// ── resolveNextRoute ─────────────────────────────────────────────────────────
+
 /**
  * Called when a provider attempt fails (4xx/5xx/timeout).
  * Returns the next available provider to try as a fallback.
@@ -65,14 +102,8 @@ export async function resolveNextRoute(
   ruleName: string,
   excludeKeys: string[],
 ): Promise<ResolvedRoute | null> {
-  const rows = await db
-    .select()
-    .from(routingRulesTable)
-    .where(eq(routingRulesTable.name, ruleName))
-    .limit(1);
-
-  const rule = rows[0];
-  if (!rule || !rule.isActive) return null;
+  const rule = await findBestRule(ruleName);
+  if (!rule) return null;
 
   const sorted = [...rule.providers].sort((a, b) => a.priority - b.priority);
 
@@ -94,9 +125,9 @@ export async function resolveNextRoute(
   return null;
 }
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+
 function getRateLimitKey(entry: RoutingProviderEntry): string {
-  // Use the stored API key suffix as discriminator so different accounts
-  // of the same provider type each get their own rate-limit bucket.
   const keySuffix = entry.apiKey ? `:${entry.apiKey.slice(-10)}` : "";
   switch (entry.providerType) {
     case "cc":     return `cc${keySuffix || ":pool"}`;
