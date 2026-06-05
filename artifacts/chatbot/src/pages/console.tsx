@@ -762,6 +762,115 @@ function ApiKeysPanel({ isAdmin }: { isAdmin: boolean }) {
 }
 
 
+// ─── Test Chat Panel ──────────────────────────────────────────────────────────
+
+function TestChatPanel() {
+  const { messages, isStreaming, error, sendMessage, clearMessages } = useChatStream();
+  const { data: modelsData } = useGetChatModels({
+    query: { queryKey: ["/api/chat/models"], staleTime: 60_000 },
+  });
+  const models = (modelsData as { models?: { id: string; name: string }[] })?.models ?? [];
+  const [model, setModel] = useState("");
+  const [input, setInput] = useState("");
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (models.length && !model) setModel(models[0].id);
+  }, [models, model]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isStreaming]);
+
+  const submit = () => {
+    if (!input.trim() || isStreaming || !model) return;
+    sendMessage(input.trim(), model, "");
+    setInput("");
+  };
+
+  return (
+    <div className="flex flex-col h-full border-l border-border/50 bg-card/10">
+      {/* Header */}
+      <div className="flex-none flex items-center justify-between px-3 py-2 border-b border-border/50">
+        <div className="flex items-center gap-1.5">
+          <Send className="w-3 h-3 text-primary" />
+          <span className="text-[11px] font-medium">Test Chat</span>
+        </div>
+        <button onClick={clearMessages}
+          className="text-[10px] text-muted-foreground/40 hover:text-muted-foreground px-1.5 py-0.5 rounded hover:bg-muted/20 transition-colors">
+          clear
+        </button>
+      </div>
+
+      {/* Model selector */}
+      <div className="flex-none px-3 py-2 border-b border-border/30">
+        <Select value={model} onValueChange={setModel}>
+          <SelectTrigger className="h-7 text-[11px] font-mono">
+            <SelectValue placeholder="Select route…" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectLabel className="text-[10px]">Routing Rules</SelectLabel>
+              {models.map(m => (
+                <SelectItem key={m.id} value={m.id} className="text-[11px] font-mono">{m.id}</SelectItem>
+              ))}
+              {models.length === 0 && (
+                <SelectItem value="__none" disabled className="text-[11px] text-muted-foreground">No routing rules</SelectItem>
+              )}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 min-h-0">
+        {messages.length === 0 && (
+          <p className="text-[11px] text-muted-foreground/40 text-center mt-8 font-sans">Send a message to test routing</p>
+        )}
+        {messages.map(m => (
+          <div key={m.id} className={`flex flex-col gap-0.5 ${m.role === "user" ? "items-end" : "items-start"}`}>
+            <span className="text-[9px] uppercase tracking-wider text-muted-foreground/40 font-sans px-1">
+              {m.role === "user" ? "you" : model}
+            </span>
+            <div className={`text-[11px] leading-relaxed px-2.5 py-1.5 rounded-lg max-w-[95%] font-sans whitespace-pre-wrap break-words
+              ${m.role === "user"
+                ? "bg-primary/15 text-foreground"
+                : "bg-muted/30 text-foreground"}`}>
+              {m.content || (isStreaming && m.role === "assistant" ? <span className="animate-pulse text-muted-foreground">…</span> : "")}
+            </div>
+          </div>
+        ))}
+        {error && (
+          <div className="text-[11px] text-destructive bg-destructive/10 px-2.5 py-1.5 rounded font-sans">
+            {error}
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <div className="flex-none px-3 py-2 border-t border-border/30">
+        <div className="flex gap-2">
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }}
+            placeholder="Type a message…"
+            disabled={isStreaming || !model}
+            className="flex-1 text-[11px] font-sans bg-muted/20 border border-border/50 rounded px-2.5 py-1.5 placeholder:text-muted-foreground/30 focus:outline-none focus:border-primary/50 disabled:opacity-40"
+          />
+          <button onClick={submit} disabled={isStreaming || !input.trim() || !model}
+            className="flex-none p-1.5 rounded bg-primary/20 text-primary hover:bg-primary/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+            {isStreaming
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <ArrowUp className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Console ─────────────────────────────────────────────────────────────
 
 const STATIC_NAV: { id: NavItem; label: string; icon: React.ReactNode }[] = [
