@@ -520,45 +520,184 @@ function ApiKeysPage({ keys, loadingKeys, onRefresh }: { keys: UserKey[]; loadin
 }
 
 // ── MODELS PAGE ───────────────────────────────────────────────────────────────
-const MODELS_LIST = [
-  { channel: "/claude", models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-3-5"], type: "Anthropic" },
-  { channel: "/claude-aws", models: ["claude-opus-4-5", "claude-sonnet-4-5"], type: "Anthropic (AWS)" },
-  { channel: "/codex-pro", models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5", "gpt-4o", "o3", "o4-mini"], type: "OpenAI Completions" },
-  { channel: "/codex", models: ["gpt-5.4", "gpt-5", "o3", "o4-mini"], type: "OpenAI Responses" },
-  { channel: "/gemini", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"], type: "Google Gemini" },
-  { channel: "/deepseek", models: ["deepseek-chat", "deepseek-reasoner"], type: "DeepSeek (OAI)" },
-  { channel: "/deepseek/anthropic", models: ["deepseek-chat", "deepseek-reasoner"], type: "DeepSeek (Anthropic)" },
-];
+type CatalogModel = { id: string; name: string; group: string; description: string; tier: string };
+type RcChannel   = { channel: string; group: string; models: CatalogModel[] };
+type RoutingEntry = { id: string; name: string; description: string | null; providers: { type: string; modelId: string }[] };
+type ModelsCatalog = { cc: CatalogModel[]; rc: RcChannel[]; routing: RoutingEntry[] };
+
+const PROVIDER_COLORS: Record<string, string> = {
+  cc: "text-emerald-400", rc: "text-blue-400", ag: "text-violet-400", custom: "text-amber-400",
+};
+const PROVIDER_LABELS: Record<string, string> = {
+  cc: "CC", rc: "RC", ag: "AiGoCode", custom: "Custom",
+};
 
 function ModelsPage() {
+  const [catalog, setCatalog] = useState<ModelsCatalog | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<"routing" | "rc" | "cc">("routing");
+  const [ccSearch, setCcSearch] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const data = await apiFetch<ModelsCatalog>("/api/chat/models-catalog");
+    setCatalog(data);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Group CC models
+  const ccGroups = catalog
+    ? Array.from(
+        catalog.cc
+          .filter(m => m.name.toLowerCase().includes(ccSearch.toLowerCase()) || m.id.toLowerCase().includes(ccSearch.toLowerCase()))
+          .reduce((map, m) => {
+            if (!map.has(m.group)) map.set(m.group, []);
+            map.get(m.group)!.push(m);
+            return map;
+          }, new Map<string, CatalogModel[]>()),
+      )
+    : [];
+
   return (
     <div className="space-y-4">
-      <h1 className="text-lg font-bold text-white">Available Models</h1>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {MODELS_LIST.map(group => (
-          <div key={group.channel} className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <p className="text-sm font-mono font-bold text-white">{group.channel}</p>
-                <p className="text-xs text-white/40 mt-0.5">{group.type}</p>
-              </div>
-              <span className="text-xs bg-[#f97316]/10 text-[#f97316] px-2 py-0.5 rounded-full">{group.models.length} models</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {group.models.map(m => (
-                <span key={m} className="text-xs font-mono bg-white/5 text-white/60 px-2 py-1 rounded border border-white/[0.08]">{m}</span>
-              ))}
-            </div>
-          </div>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-bold text-white">Available Models</h1>
+        <button onClick={load} disabled={loading} className="p-1.5 text-white/30 hover:text-white transition-colors">
+          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1">
+        {(["routing", "rc", "cc"] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${tab === t ? "bg-[#f97316]/20 text-[#f97316] border border-[#f97316]/30" : "text-white/40 hover:text-white hover:bg-white/5"}`}>
+            {t === "routing" ? `Routing Rules${catalog ? ` (${catalog.routing.length})` : ""}` :
+             t === "rc" ? `RC Channels${catalog ? ` (${catalog.rc.length})` : ""}` :
+             `CC Models${catalog ? ` (${catalog.cc.length})` : ""}`}
+          </button>
         ))}
       </div>
-      <p className="text-xs text-white/30 text-center">Model IDs: <code className="text-[#f97316]">rc:&#123;channel&#125;|&#123;model&#125;</code> — e.g. <code className="text-[#f97316]">rc:/codex-pro|gpt-5.4</code></p>
+
+      {loading ? (
+        <div className="flex items-center justify-center h-48">
+          <div className="flex flex-col items-center gap-3">
+            <RefreshCw className="w-5 h-5 animate-spin text-white/30" />
+            <p className="text-xs text-white/30">Loading models from server…</p>
+          </div>
+        </div>
+      ) : !catalog ? (
+        <div className="text-center py-16 text-white/30 text-sm">Failed to load catalog</div>
+      ) : (
+        <>
+          {/* ── ROUTING RULES ─────────────────────────────────────────────── */}
+          {tab === "routing" && (
+            <div className="space-y-3">
+              {catalog.routing.length === 0 ? (
+                <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-8 text-center">
+                  <p className="text-sm text-white/30">No routing rules configured yet</p>
+                  <p className="text-xs text-white/20 mt-1">Admin can add routing rules to configure custom model routes</p>
+                </div>
+              ) : catalog.routing.map(r => (
+                <div key={r.id} className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-mono font-bold text-white">{r.name}</p>
+                      {r.description && <p className="text-xs text-white/40 mt-0.5 font-sans">{r.description}</p>}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-none">
+                      {r.providers.map((p, i) => (
+                        <span key={i} className={`text-[10px] font-medium px-2 py-0.5 rounded-full border border-current/20 bg-current/5 ${PROVIDER_COLORS[p.type] ?? "text-white/50"}`}>
+                          {PROVIDER_LABELS[p.type] ?? p.type}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  {r.providers.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {r.providers.map((p, i) => (
+                        <span key={i} className="text-[10px] font-mono text-white/40 bg-white/[0.03] border border-white/[0.06] px-1.5 py-0.5 rounded">
+                          {p.modelId}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── RC CHANNELS ───────────────────────────────────────────────── */}
+          {tab === "rc" && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {catalog.rc.length === 0 ? (
+                <p className="text-sm text-white/30 col-span-2 text-center py-12">No RC models available</p>
+              ) : catalog.rc.map(ch => (
+                <div key={ch.channel} className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <p className="text-sm font-mono font-bold text-white">{ch.channel}</p>
+                      <p className="text-xs text-white/40 mt-0.5">{ch.group}</p>
+                    </div>
+                    <span className="text-xs bg-blue-400/10 text-blue-400 px-2 py-0.5 rounded-full">{ch.models.length} models</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {ch.models.slice(0, 12).map(m => (
+                      <span key={m.id} title={m.description}
+                        className="text-xs font-mono bg-white/5 text-white/60 px-2 py-1 rounded border border-white/[0.08] hover:border-blue-400/30 hover:text-blue-300 transition-colors cursor-default">
+                        {m.name !== m.id.split("|")[1] ? m.name : (m.id.split("|")[1] ?? m.name)}
+                      </span>
+                    ))}
+                    {ch.models.length > 12 && (
+                      <span className="text-xs text-white/30 px-2 py-1">+{ch.models.length - 12} more</span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-white/20 mt-2 font-mono">rc:{ch.channel}|&lt;model&gt;</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── CC MODELS ─────────────────────────────────────────────────── */}
+          {tab === "cc" && (
+            <div className="space-y-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/30" />
+                <input value={ccSearch} onChange={e => setCcSearch(e.target.value)} placeholder="Search CC models…"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-8 pr-3 py-2 text-xs text-white placeholder:text-white/20 focus:outline-none focus:border-white/20" />
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {ccGroups.map(([group, models]) => (
+                  <div key={group} className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-sm font-bold text-white">{group}</p>
+                      <span className="text-xs bg-emerald-400/10 text-emerald-400 px-2 py-0.5 rounded-full">{models.length}</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {models.map(m => (
+                        <div key={m.id} className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono text-white/50 flex-1 truncate">{m.id}</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${m.tier === "pro" ? "border-[#f97316]/20 text-[#f97316] bg-[#f97316]/5" : "border-emerald-500/20 text-emerald-400 bg-emerald-500/5"}`}>
+                            {m.tier}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
 
 // ── SUBSCRIBE PAGE ────────────────────────────────────────────────────────────
-function SubscribePage() {
+function SubscribePage({ creditBalance }: { creditBalance: number }) {
   const [amount, setAmount] = useState("1");
   return (
     <div className="space-y-4">
@@ -567,7 +706,7 @@ function SubscribePage() {
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-white">Balance Top-up</h2>
           <span className="text-xs text-green-400 border border-green-500/20 bg-green-500/10 px-3 py-1 rounded-full flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 bg-green-400 rounded-full" /> Current balance $0.00
+            <span className="w-1.5 h-1.5 bg-green-400 rounded-full" /> Current balance {creditBalance.toLocaleString()} cr
           </span>
         </div>
         <div>
@@ -1199,7 +1338,7 @@ export default function UserDashboard() {
           {nav === "keys" && <ApiKeysPage keys={keys} loadingKeys={keysLoading} onRefresh={loadKeys} />}
           {nav === "models" && <ModelsPage />}
           {nav === "docs" && <DocsPage apiKey={keys[0]?.key ?? ""} />}
-          {nav === "subscribe" && <SubscribePage />}
+          {nav === "subscribe" && <SubscribePage creditBalance={creditBalance} />}
           {nav === "invite" && <InvitePage userId={user?.id ?? "00000000"} />}
           {nav === "contact" && <ContactPage />}
         </main>

@@ -2,7 +2,8 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import os from "os";
 import Anthropic from "@anthropic-ai/sdk";
-import { db, userKeysTable, requestLogsTable, providersTable } from "@workspace/db";
+import { db, userKeysTable, requestLogsTable, providersTable, routingRulesTable } from "@workspace/db";
+import type { RoutingProviderEntry } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid, penalizeCcKey } from "../lib/key-pool";
 import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid, penalizeRcKey } from "../lib/rc-pool";
@@ -357,6 +358,49 @@ router.get("/chat/rc-models", async (req, res) => {
     req.log.error({ err }, "Failed to fetch Right Code models");
     res.status(500).json({ error: "Failed to fetch Right Code models" });
   }
+});
+
+// ── GET /chat/models-catalog — combined catalog for user dashboard ────────────
+// Returns CC models + RC channels + active routing rules, with overrides applied.
+// Public (no auth required) — used by user-facing Models page.
+router.get("/chat/models-catalog", async (_req, res) => {
+  const { getSettings } = await import("../lib/settings.js");
+  const overrides = getSettings().modelOverrides;
+
+  // ── CC models ────────────────────────────────────────────────────────────────
+  const ccApiKey =
+    process.env.COMMANDCODE_API_KEY ||
+    (await (async () => { const k = await getNextCcKey(); return k?.key; })());
+  const ccRaw = ccApiKey ? await fetchCcModels(ccApiKey) : CC_MODELS_FALLBACK;
+  const cc = ccRaw
+    .filter(m => !overrides[m.id]?.hidden)
+    .map(m => ({ ...m, name: overrides[m.id]?.displayName ?? m.name }));
+
+  // ── RC models grouped by channel ─────────────────────────────────────────────
+  const rcByChannel = new Map<string, { channel: string; group: string; models: ModelDef[] }>();
+  try {
+    const rcRaw = await fetchRcModels();
+    for (const m of rcRaw) {
+      if (overrides[m.id]?.hidden) continue;
+      const channel = m.id.replace(/^rc:/, "").split("|")[0] ?? "";
+      if (!rcByChannel.has(channel)) rcByChannel.set(channel, { channel, group: m.group, models: [] });
+      rcByChannel.get(channel)!.models.push({ ...m, name: overrides[m.id]?.displayName ?? m.name });
+    }
+  } catch { /* network failure — return empty RC list */ }
+
+  // ── Active routing rules ──────────────────────────────────────────────────────
+  const rules = await db.select().from(routingRulesTable).where(eq(routingRulesTable.isActive, true));
+  const routing = rules.map(r => ({
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    providers: (r.providers as RoutingProviderEntry[]).map(p => ({
+      type: p.providerType,
+      modelId: p.modelId,
+    })),
+  }));
+
+  res.json({ cc, rc: [...rcByChannel.values()], routing });
 });
 
 // ── GET /chat/ag-models — AiGoCode models (per-key, cached 10 min) ───────────
