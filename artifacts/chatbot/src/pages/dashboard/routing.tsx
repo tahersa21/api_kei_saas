@@ -37,10 +37,10 @@ type CustomProvider = {
 type PoolKey = { id: string; label: string; key: string; isActive: boolean; apiType?: string; baseUrl?: string };
 
 const PROVIDER_TYPE_LABELS: Record<string, string> = {
-  cc: "CommandCode", rc: "Right Code", ag: "AiGoCode", custom: "Custom",
+  custom: "Custom",
 };
 const PROVIDER_TYPE_COLORS: Record<string, string> = {
-  cc: "text-emerald-400", rc: "text-blue-400", ag: "text-violet-400", custom: "text-amber-400",
+  custom: "text-amber-400",
 };
 
 function loadPoolKeys(slug: string): PoolKey[] {
@@ -88,18 +88,7 @@ function RoutingProviderRow({
     setFetchingModels(true); setBrowseError(""); setBrowsedModels([]); setBrowsedModelGroups([]); setShowPicker(false);
     try {
       let ids: string[] = [];
-      if (entry.providerType === "cc") {
-        const r = await fetch("/api/chat/models");
-        if (r.ok) { const d = await r.json() as { models: (string | { id: string })[] }; ids = d.models.map(m => typeof m === "string" ? m : m.id); }
-      } else if (entry.providerType === "rc") {
-        const r = await fetch("/api/chat/rc-models");
-        if (r.ok) { const d = await r.json() as { models: { id: string }[] }; ids = d.models.map(m => m.id); }
-      } else if (entry.providerType === "ag") {
-        const agKey = localStorage.getItem("aigocode_api_key") ?? "";
-        const r = await fetch("/api/chat/ag-models", { headers: { "X-Aigocode-Key": agKey } });
-        if (r.ok) { const d = await r.json() as { models: { id: string }[] }; ids = d.models.map(m => m.id); }
-        else { setBrowseError("Add AiGoCode key in settings first"); }
-      } else if (entry.providerType === "custom" && entry.providerId) {
+      if (entry.providerType === "custom" && entry.providerId) {
         const provider = customProviders.find(p => p.slug === entry.providerId);
         if (provider && adminToken) {
           const keysToQuery: { id: string; label: string; key: string; baseUrl?: string }[] =
@@ -142,21 +131,16 @@ function RoutingProviderRow({
     finally { setFetchingModels(false); }
   };
 
-  const selectVal = entry.providerType === "custom" ? (entry.providerId ?? "__custom__") : entry.providerType;
+  const selectVal = entry.providerId ?? "__none__";
 
   const handleProviderChange = (val: string) => {
-    const builtin = ["cc", "rc", "ag"];
-    if (builtin.includes(val)) {
-      onChange({ ...entry, providerType: val as "cc" | "rc" | "ag", providerId: undefined, modelId: "", apiKey: undefined, apiBaseUrl: undefined });
-    } else {
-      onChange({ ...entry, providerType: "custom", providerId: val, modelId: "", apiKey: undefined, apiBaseUrl: undefined });
-    }
+    onChange({ ...entry, providerType: "custom", providerId: val === "__none__" ? undefined : val, modelId: "", apiKey: undefined, apiBaseUrl: undefined });
     setBrowsedModels([]); setShowPicker(false); setBrowseError("");
   };
 
   const selectedKeyId = entry.apiKey ? (poolKeys.find(k => k.key === entry.apiKey)?.id ?? "__unknown__") : "__any__";
 
-  const modelPlaceholder = entry.providerType === "rc" ? "rc:/codex-pro|gpt-5" : entry.providerType === "ag" ? "ag:gpt-4o" : "zai-org/GLM-5";
+  const modelPlaceholder = "zai-org/GLM-5";
 
   return (
     <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border/30 bg-background/40">
@@ -178,16 +162,8 @@ function RoutingProviderRow({
           <span className="text-[9px] uppercase tracking-wider text-muted-foreground/40 w-16 flex-none">Provider</span>
           <select value={selectVal} onChange={e => handleProviderChange(e.target.value)}
             className="flex-1 h-7 rounded-md border border-border/40 bg-background/60 text-xs px-2 font-mono focus:outline-none focus:ring-1 focus:ring-primary/50">
-            <optgroup label="Built-in">
-              <option value="cc">CommandCode (CC)</option>
-              <option value="rc">Right Code (RC)</option>
-              <option value="ag">AiGoCode (AG)</option>
-            </optgroup>
-            {customProviders.length > 0 && (
-              <optgroup label="Custom">
-                {customProviders.map(p => <option key={p.slug} value={p.slug}>{p.name}</option>)}
-              </optgroup>
-            )}
+            <option value="__none__">— Select provider —</option>
+            {customProviders.map(p => <option key={p.slug} value={p.slug}>{p.name}</option>)}
           </select>
         </div>
 
@@ -293,7 +269,7 @@ function RuleEditor({
   const [err, setErr] = useState("");
 
   const addProvider = () =>
-    setProviders(prev => [...prev, { providerType: "cc", modelId: "", rpmLimit: 0, priority: prev.length }]);
+    setProviders(prev => [...prev, { providerType: "custom", modelId: "", rpmLimit: 0, priority: prev.length }]);
 
   const handleSave = async () => {
     if (!name.trim()) { setErr("Name is required"); return; }
@@ -482,8 +458,18 @@ export default function RoutingPage() {
           <Loader2 className="w-5 h-5 animate-spin text-primary/40" />
         </div>
       ) : rules.length === 0 && !creating ? (
-        <div className="text-center py-16 text-xs text-muted-foreground/30 font-sans">
-          No routing rules yet. Click "New Rule" to get started.
+        <div className="flex flex-col items-center py-12 gap-4">
+          <p className="text-xs text-muted-foreground/30 font-sans">No routing rules yet.</p>
+          <div className="border border-amber-500/20 bg-amber-500/5 rounded-xl px-5 py-4 max-w-sm text-center space-y-3">
+            <p className="text-[11px] text-amber-400/80 font-sans font-medium">Tip: Create a <code className="font-mono">_default</code> rule</p>
+            <p className="text-[10px] text-muted-foreground/50 font-sans leading-relaxed">
+              A rule named <code className="font-mono text-primary/60">_default</code> catches all requests that don't match a specific rule — including Codex CLI, Claude Code, and any unrecognised model.
+            </p>
+            <Button size="sm" variant="outline" className="h-7 px-3 text-xs gap-1.5 border-amber-500/30 text-amber-400/80 hover:bg-amber-500/10"
+              onClick={() => { setCreating(true); }}>
+              <Plus className="w-3 h-3" /> Create _default Rule
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
@@ -542,7 +528,7 @@ export default function RoutingPage() {
                         return (
                           <div key={i} className="flex items-center gap-2 text-[10px] font-sans">
                             <span className="text-[8px] text-muted-foreground/40">#{i + 1}</span>
-                            <span className={`font-bold ${PROVIDER_TYPE_COLORS[p.providerType]}`}>{PROVIDER_TYPE_LABELS[p.providerType]}</span>
+                            <span className={`font-bold ${PROVIDER_TYPE_COLORS[p.providerType] ?? "text-muted-foreground/60"}`}>{PROVIDER_TYPE_LABELS[p.providerType] ?? p.providerType}</span>
                             <span className="text-foreground/60 font-mono truncate">{p.modelId || "—"}</span>
                             {p.rpmLimit > 0 && (
                               <span className={overLimit ? "text-destructive/60" : "text-muted-foreground/30"}>
