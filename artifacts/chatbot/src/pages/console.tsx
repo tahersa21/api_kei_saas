@@ -15,9 +15,55 @@ import {
   Loader2, ToggleLeft, ToggleRight, RefreshCw, ChevronRight,
   Cpu, Video, Mic, Globe, Key, Send, SquareSquare, Clock,
   AlertTriangle, ExternalLink, Eye, EyeOff, X, Pencil, Sun, Moon,
-  GitBranch, GripVertical, ArrowUp, ArrowDown,
+  GitBranch, GripVertical, ArrowUp, ArrowDown, Search, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { useTheme } from "@/context/theme";
+
+// ─── Pool Key types (shared between console and providers panel) ──────────────
+
+type PoolKeyApiType = "auto" | "openai" | "codex" | "anthropic" | "gemini";
+type PoolKey = {
+  id: string;
+  label: string;
+  key: string;
+  isActive: boolean;
+  apiType?: PoolKeyApiType;
+  baseUrl?: string;
+};
+
+type FetchedModel = { id: string; owned_by?: string };
+
+const API_TYPE_LABELS: Record<PoolKeyApiType, string> = {
+  auto: "Auto (detect)",
+  openai: "OpenAI (/v1/chat/completions)",
+  codex: "Codex (/v1/responses)",
+  anthropic: "Anthropic (/v1/messages)",
+  gemini: "Gemini (native)",
+};
+
+function loadPoolKeys(slug: string): PoolKey[] {
+  try {
+    const raw = localStorage.getItem(`provider_keys_${slug}`);
+    if (raw) return JSON.parse(raw) as PoolKey[];
+    const legacy = localStorage.getItem(`provider_key_${slug}`);
+    if (legacy) {
+      const migrated: PoolKey[] = [{ id: crypto.randomUUID(), label: "Key 1", key: legacy, isActive: true }];
+      localStorage.setItem(`provider_keys_${slug}`, JSON.stringify(migrated));
+      localStorage.removeItem(`provider_key_${slug}`);
+      return migrated;
+    }
+  } catch { /* ignore */ }
+  return [];
+}
+
+function savePoolKeys(slug: string, keys: PoolKey[]) {
+  localStorage.setItem(`provider_keys_${slug}`, JSON.stringify(keys));
+}
+
+function maskKey(k: string) {
+  if (k.length <= 8) return "••••••••";
+  return k.slice(0, 6) + "•".repeat(Math.min(k.length - 9, 20)) + k.slice(-3);
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -733,80 +779,272 @@ function RoutingPanel(_props: { isAdmin: boolean; customProviders: CustomProvide
 // ─── Custom Provider Key Panel ────────────────────────────────────────────────
 
 function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
-  const storageKey = `provider_key_${provider.slug}`;
-  const [key, setKey] = useState(() => localStorage.getItem(storageKey) ?? "");
-  const [input, setInput] = useState(key);
-  const [show, setShow] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const apiFetch = useAdminFetch();
+  const [keys, setKeys] = useState<PoolKey[]>(() => loadPoolKeys(provider.slug));
+  const [showForm, setShowForm] = useState(false);
+  const [formLabel, setFormLabel] = useState("");
+  const [formKey, setFormKey] = useState("");
+  const [formApiType, setFormApiType] = useState<PoolKeyApiType>("auto");
+  const [formBaseUrl, setFormBaseUrl] = useState("");
+  const [showFormKey, setShowFormKey] = useState(false);
+  const [copiedKeyId, setCopiedKeyId] = useState("");
 
-  const save = () => {
-    const val = input.trim();
-    if (val) localStorage.setItem(storageKey, val);
-    else localStorage.removeItem(storageKey);
-    setKey(val);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  // Model browsing
+  type KeyModels = { keyId: string; keyLabel: string; models: FetchedModel[]; error?: string };
+  const [keyModels, setKeyModels] = useState<KeyModels[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelsFetched, setModelsFetched] = useState(false);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [copiedModelId, setCopiedModelId] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
+
+  const persist = (next: PoolKey[]) => { setKeys(next); savePoolKeys(provider.slug, next); };
+
+  const addKey = () => {
+    if (!formKey.trim()) return;
+    const label = formLabel.trim() || `Key ${keys.length + 1}`;
+    const trimmedBaseUrl = formBaseUrl.trim();
+    persist([...keys, {
+      id: crypto.randomUUID(), label, key: formKey.trim(), isActive: true, apiType: formApiType,
+      ...(trimmedBaseUrl ? { baseUrl: trimmedBaseUrl } : {}),
+    }]);
+    setFormLabel(""); setFormKey(""); setFormApiType("auto"); setFormBaseUrl("");
+    setShowForm(false); setShowFormKey(false);
   };
 
-  const clear = () => {
-    localStorage.removeItem(storageKey);
-    setKey("");
-    setInput("");
+  const delKey = (id: string) => persist(keys.filter(k => k.id !== id));
+  const toggleKey = (id: string) => persist(keys.map(k => k.id === id ? { ...k, isActive: !k.isActive } : k));
+
+  const copyKey = (id: string, val: string) => {
+    navigator.clipboard.writeText(val).catch(() => {});
+    setCopiedKeyId(id); setTimeout(() => setCopiedKeyId(""), 1500);
   };
+
+  const copyModelId = (id: string) => {
+    navigator.clipboard.writeText(id).catch(() => {});
+    setCopiedModelId(id); setTimeout(() => setCopiedModelId(""), 1500);
+  };
+
+  const fetchModels = async () => {
+    const activeKeys = keys.filter(k => k.isActive);
+    const keysToTry = activeKeys.length > 0
+      ? activeKeys.map(k => ({ id: k.id, label: k.label, key: k.key, baseUrl: k.baseUrl, apiType: k.apiType }))
+      : [{ id: "__no-key__", label: "No key", key: "", baseUrl: undefined as string | undefined, apiType: undefined as string | undefined }];
+    setFetchingModels(true); setKeyModels([]); setModelsFetched(false);
+    const results = await Promise.all(
+      keysToTry.map(k =>
+        apiFetch("/api/admin/provider-models", {
+          method: "POST",
+          body: JSON.stringify({ baseUrl: k.baseUrl || provider.baseUrl, apiKey: k.key || undefined, apiType: k.apiType }),
+        }).then(async res => {
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+            return { keyId: k.id, keyLabel: k.label, models: [] as FetchedModel[], error: err.error ?? `HTTP ${res.status}` };
+          }
+          const data = await res.json() as { models: FetchedModel[] };
+          return { keyId: k.id, keyLabel: k.label, models: (data.models ?? []).sort((a, b) => a.id.localeCompare(b.id)) };
+        }).catch((e: unknown) => ({ keyId: k.id, keyLabel: k.label, models: [] as FetchedModel[], error: String(e).slice(0, 80) }))
+      )
+    );
+    setKeyModels(results);
+    setModelsFetched(true);
+    if (results.length > 0) setExpandedKey(results[0].keyId);
+    setFetchingModels(false);
+  };
+
+  const activeCount = keys.filter(k => k.isActive).length;
+  const totalModels = keyModels.reduce((n, g) => n + g.models.length, 0);
 
   return (
-    <div className="p-6 space-y-5 max-w-xl">
+    <div className="p-6 space-y-5 max-w-2xl">
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <Key className="w-4 h-4 text-primary" />
-        <h2 className="font-bold text-sm">{provider.name} — API Key</h2>
-        {key && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-sans">مُفعَّل</span>}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Key className="w-4 h-4 text-primary" />
+          <h2 className="font-bold text-sm">{provider.name}</h2>
+          {activeCount > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-sans">
+              {activeCount} active
+            </span>
+          )}
+        </div>
+        <Button size="sm" variant="outline" className="h-7 px-2.5 text-[10px] gap-1" onClick={() => setShowForm(v => !v)}>
+          <Plus className="w-3 h-3" /> Add Key
+        </Button>
       </div>
-      <p className="text-xs text-muted-foreground font-sans leading-relaxed">
-        المفتاح يُخزَّن محلياً في المتصفح ويُرسَل مع كل طلب لهذا المزود.
-        <br />
-        <span className="text-muted-foreground/60">Base URL: <code className="font-mono">{provider.baseUrl}</code></span>
+      <p className="text-[10px] text-muted-foreground/60 font-sans -mt-2">
+        Base URL: <code className="font-mono text-primary/60">{provider.baseUrl}</code>
       </p>
 
-      {/* Key input */}
-      <div className="space-y-2">
-        <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">API Key</label>
-        <div className="flex gap-2">
-          <div className="flex-1 relative">
-            <Input
-              type={show ? "text" : "password"}
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && save()}
-              placeholder="sk-…"
-              className="h-8 text-xs font-mono pr-8"
-            />
-            <button onClick={() => setShow(s => !s)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground">
-              {show ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+      {/* Add key form */}
+      {showForm && (
+        <div className="border border-border/40 rounded-lg p-3 space-y-2 bg-card/50">
+          <p className="text-[9px] text-muted-foreground/50 uppercase tracking-widest">مفتاح جديد</p>
+          <Input value={formLabel} onChange={e => setFormLabel(e.target.value)}
+            className="h-7 text-xs bg-background/50" placeholder="الاسم / التسمية (اختياري)" />
+          <div className="relative">
+            <input type={showFormKey ? "text" : "password"} value={formKey}
+              onChange={e => setFormKey(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") addKey(); }}
+              className="w-full h-7 text-xs font-mono bg-background/50 border border-input rounded-md px-3 pr-8 text-foreground outline-none focus:ring-1 focus:ring-ring"
+              placeholder={`${provider.name} API key…`} autoFocus />
+            <button type="button" onClick={() => setShowFormKey(v => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/40 hover:text-muted-foreground">
+              {showFormKey ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
             </button>
           </div>
-          <Button onClick={save} size="sm" className="h-8 text-xs px-3">
-            {saved ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : "حفظ"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Current stored key */}
-      {key && (
-        <div className="flex items-center justify-between bg-muted/20 border border-border/40 rounded px-3 py-2">
-          <div>
-            <p className="text-[10px] text-muted-foreground font-sans mb-0.5">المفتاح المحفوظ</p>
-            <code className="text-[11px] font-mono">
-              {key.slice(0, 8)}{"•".repeat(Math.min(16, key.length - 8))}
-            </code>
+          {/* API type */}
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] text-muted-foreground/50 w-20 flex-none">نوع الاتصال</span>
+            <select value={formApiType} onChange={e => setFormApiType(e.target.value as PoolKeyApiType)}
+              className="flex-1 h-6 rounded border border-border/40 bg-background/60 text-[10px] px-1.5 font-mono focus:outline-none focus:ring-1 focus:ring-primary/50">
+              {(Object.entries(API_TYPE_LABELS) as [PoolKeyApiType, string][]).map(([v, l]) => (
+                <option key={v} value={v}>{l}</option>
+              ))}
+            </select>
           </div>
-          <button onClick={clear}
-            className="p-1.5 rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors">
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+          {/* Base URL override */}
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] text-muted-foreground/50 w-20 flex-none leading-tight">
+              Base URL<br /><span className="text-muted-foreground/30">(اختياري)</span>
+            </span>
+            <Input value={formBaseUrl} onChange={e => setFormBaseUrl(e.target.value)}
+              className="flex-1 h-6 text-[10px] font-mono bg-background/50"
+              placeholder={`${provider.baseUrl} (افتراضي)`} dir="ltr" />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" className="h-6 text-[10px]"
+              onClick={() => { setShowForm(false); setFormLabel(""); setFormKey(""); setFormApiType("auto"); setFormBaseUrl(""); setShowFormKey(false); }}>
+              إلغاء
+            </Button>
+            <Button size="sm" className="h-6 px-2.5 text-[10px]" onClick={addKey} disabled={!formKey.trim()}>حفظ</Button>
+          </div>
         </div>
       )}
+
+      {/* Keys list */}
+      {keys.length === 0 ? (
+        <p className="text-[10px] text-muted-foreground/40 font-sans py-4 text-center">
+          لا توجد مفاتيح — اضغط "Add Key" للبدء
+        </p>
+      ) : (
+        <div className="space-y-1">
+          {keys.map((k, i) => (
+            <div key={k.id} className={`flex items-center gap-2 px-2.5 py-1.5 rounded border transition-colors
+              ${k.isActive ? "border-border/30 bg-background/30" : "border-border/20 bg-background/10 opacity-50"}`}>
+              <span className="text-[9px] text-muted-foreground/30 w-4 text-center">{i + 1}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-medium">{k.label}</span>
+                  {i === 0 && k.isActive && (
+                    <span className="text-[8px] uppercase tracking-wider px-1 py-0.5 rounded bg-primary/10 text-primary/70">active</span>
+                  )}
+                  {k.apiType && k.apiType !== "auto" && (
+                    <span className="text-[8px] text-muted-foreground/40 font-mono">{k.apiType}</span>
+                  )}
+                </div>
+                <span className="text-[9px] font-mono text-muted-foreground/40">{maskKey(k.key)}</span>
+              </div>
+              <div className="flex items-center gap-0.5 flex-none">
+                <button onClick={() => copyKey(k.id, k.key)}
+                  className="p-1 rounded text-muted-foreground/30 hover:text-foreground hover:bg-muted/20 transition-colors" title="Copy key">
+                  {copiedKeyId === k.id ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                </button>
+                <button onClick={() => toggleKey(k.id)}
+                  className="p-1 rounded text-muted-foreground/30 hover:text-foreground hover:bg-muted/20 transition-colors">
+                  {k.isActive ? <ToggleRight className="w-3.5 h-3.5 text-emerald-500" /> : <ToggleLeft className="w-3.5 h-3.5" />}
+                </button>
+                <button onClick={() => delKey(k.id)}
+                  className="p-1 rounded text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 transition-colors">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Model browser */}
+      <div className="border-t border-border/20 pt-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-[9px] text-muted-foreground/60 uppercase tracking-wider">
+            النماذج المتاحة
+            {modelsFetched && <span className="ml-1.5 normal-case tracking-normal font-sans text-muted-foreground/40">({totalModels} نموذج)</span>}
+          </label>
+          <Button size="sm" variant="outline" className="h-6 px-2 text-[9px] gap-1" onClick={fetchModels} disabled={fetchingModels}>
+            {fetchingModels ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Search className="w-2.5 h-2.5" />}
+            {fetchingModels ? "جارٍ السحب…" : "سحب النماذج"}
+          </Button>
+        </div>
+
+        {modelsFetched && keyModels.length > 0 && (
+          <div className="space-y-2">
+            {totalModels > 5 && (
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/30" />
+                <input value={modelSearch} onChange={e => setModelSearch(e.target.value)}
+                  placeholder="ابحث عن نموذج…"
+                  className="w-full h-6 text-[10px] font-mono bg-background/40 border border-border/30 rounded px-6 text-foreground outline-none focus:ring-1 focus:ring-primary/40 placeholder:text-muted-foreground/30" />
+              </div>
+            )}
+            {keyModels.map(kr => {
+              const isOpen = expandedKey === kr.keyId;
+              const hasError = !!kr.error;
+              const count = kr.models.length;
+              const filtered = modelSearch
+                ? kr.models.filter(m => m.id.toLowerCase().includes(modelSearch.toLowerCase()))
+                : kr.models;
+              return (
+                <div key={kr.keyId} className="border border-border/30 rounded-lg overflow-hidden">
+                  <button
+                    className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-muted/10 transition-colors"
+                    onClick={() => setExpandedKey(isOpen ? null : kr.keyId)}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-medium">{kr.keyLabel}</span>
+                      {hasError
+                        ? <span className="text-[9px] text-destructive/70 font-sans">خطأ</span>
+                        : <span className="text-[9px] text-muted-foreground/40 font-sans">{count} نموذج</span>}
+                    </div>
+                    {isOpen ? <ChevronUp className="w-3 h-3 text-muted-foreground/40" /> : <ChevronDown className="w-3 h-3 text-muted-foreground/40" />}
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-3 border-t border-border/20">
+                      {hasError ? (
+                        <div className="text-[10px] text-destructive/80 bg-destructive/10 border border-destructive/20 rounded p-2 font-sans mt-2">{kr.error}</div>
+                      ) : count === 0 ? (
+                        <p className="text-[10px] text-muted-foreground/40 font-sans px-1 py-2">لا توجد نماذج.</p>
+                      ) : (
+                        <div className="space-y-1 max-h-56 overflow-y-auto pr-0.5 mt-2">
+                          {filtered.map(m => (
+                            <div key={m.id}
+                              className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-background/40 border border-border/20 hover:border-border/50 transition-colors group">
+                              <span className="text-[10px] font-mono text-foreground/80 truncate">{m.id}</span>
+                              <div className="flex items-center gap-2 flex-none">
+                                {m.owned_by && (
+                                  <span className="text-[9px] text-muted-foreground/30 font-sans hidden group-hover:block">{m.owned_by}</span>
+                                )}
+                                <button onClick={() => copyModelId(m.id)}
+                                  className="text-muted-foreground/30 hover:text-muted-foreground p-0.5 transition-colors">
+                                  {copiedModelId === m.id
+                                    ? <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                                    : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                          {filtered.length === 0 && modelSearch && (
+                            <p className="text-[10px] text-muted-foreground/40 font-sans text-center py-2">لا توجد نتائج لـ "{modelSearch}"</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
