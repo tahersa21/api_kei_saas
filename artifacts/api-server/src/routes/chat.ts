@@ -1,23 +1,12 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import os from "os";
 import Anthropic from "@anthropic-ai/sdk";
 import { db, userKeysTable, requestLogsTable, providersTable, routingRulesTable } from "@workspace/db";
 import type { RoutingProviderEntry } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
-import { getNextCcKey, incrementCcKeyUsage, markCcKeyInvalid, penalizeCcKey } from "../lib/key-pool";
-import { getNextRcKey, incrementRcKeyUsage, markRcKeyInvalid, penalizeRcKey } from "../lib/rc-pool";
 import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute, penalizeRateLimit } from "../lib/routing-engine";
 
 const router = Router();
-
-const COMMANDCODE_URL        = "https://api.commandcode.ai/alpha/generate";
-const COMMANDCODE_MODELS_URL = "https://api.commandcode.ai/provider/v1/models";
-const COMMANDCODE_VERSION    = "0.26.23";
-
-// ── Right Code (right.codes) ───────────────────────────────────────────────
-const RC_BASE             = "https://right.codes";
-const RC_MODELS_PUBLIC    = "https://right.codes/models/public";
 
 // ── AiGoCode (aigocode.com) ────────────────────────────────────────────────
 const AG_BASE = "https://www.aigocode.com";
@@ -31,231 +20,64 @@ function getAgApiType(modelId: string): AgApiType {
   return "openai";
 }
 
-// API format each channel prefix uses
-type RcApiType = "openai" | "openai-responses" | "anthropic" | "gemini";
-
-const RC_CHANNEL_API_TYPE: Record<string, RcApiType> = {
-  "/deepseek":           "openai",
-  "/codex-pro":          "openai",
-  "/codex":              "openai-responses",
-  "/deepseek/anthropic": "anthropic",
-  "/claude":             "anthropic",
-  "/claude-aws":         "anthropic",
-  "/gemini":             "gemini",
-};
-
-// Human-readable group names shown in the model dropdown
-const RC_CHANNEL_GROUP: Record<string, string> = {
-  "/deepseek":           "DeepSeek",
-  "/codex-pro":          "Codex (Stable)",
-  "/codex":              "Codex (Daily)",
-  "/deepseek/anthropic": "DeepSeek (Anthropic)",
-  "/claude":             "Claude (Official)",
-  "/claude-aws":         "Claude (AWS)",
-  "/gemini":             "Gemini",
-};
-
-// Channels to exclude from chat (image-generation etc.)
-const RC_SKIP_PREFIXES = new Set(["/draw"]);
-
-// ── Full benchmark (parallel run, "say hi" prompt, one round) ──────────────────
-// zai-org/GLM-5            1891ms  0 reasoning chunks  ← FASTEST (no reasoning!)
-// MiniMaxAI/MiniMax-M2.5   1907ms  1 reasoning chunk
-// zai-org/GLM-5.1          2422ms  12 reasoning chunks
-// deepseek/deepseek-v4-flash 2469ms 22 reasoning chunks
-// deepseek/deepseek-v4-pro 3423ms  44 reasoning chunks
-// Qwen/Qwen3.7-Max         3523ms  43 reasoning chunks
-// stepfun/Step-3.5-Flash   3893ms  52 reasoning chunks
-// MiniMaxAI/MiniMax-M2.7   4511ms  30 reasoning chunks  ← slower than M2.5!
-// moonshotai/Kimi-K2.5     6149ms  232 reasoning chunks
-// Qwen/Qwen3.6-Max-Preview 8202ms  51 reasoning chunks
-// Qwen/Qwen3.6-Plus       10582ms  333 reasoning chunks
-// moonshotai/Kimi-K2.6    16187ms  39 reasoning chunks  ← SLOWEST (16s!)
-// Pro plan models (Claude/GPT/Gemini) → 403 FORBIDDEN on current CC subscription
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
 type ModelDef = { id: string; name: string; group: string; description: string; tier: string; provider?: string };
 
-// ── Enriched metadata for known CC models (group, description, benchmark) ─────
-const CC_MODEL_META: Record<string, Partial<ModelDef>> = {
-  "zai-org/GLM-5":              { name: "GLM-5 ⚡",             group: "⚡ Fastest",  description: "Fastest — ~1.9s, zero reasoning overhead",       tier: "free" },
-  "MiniMaxAI/MiniMax-M2.5":     { name: "MiniMax M2.5 ⚡",      group: "⚡ Fastest",  description: "Fast & consistent — ~1.9s, minimal thinking",    tier: "free" },
-  "zai-org/GLM-5.1":            { name: "GLM-5.1 ⚡",           group: "⚡ Fastest",  description: "Fast autonomous agent — ~2.4s",                  tier: "free" },
-  "deepseek/deepseek-v4-flash": { name: "DeepSeek V4 Flash ⚡", group: "⚡ Fastest",  description: "Fast & free — ~2.5s (variable)",                 tier: "free" },
-  "deepseek/deepseek-v4-pro":   { name: "DeepSeek V4 Pro",      group: "Open Source", description: "High quality, long-context — ~3.4s",             tier: "free" },
-  "Qwen/Qwen3.7-Max":           { name: "Qwen 3.7 Max",         group: "Open Source", description: "Frontier coding — ~3.5s",                        tier: "free" },
-  "stepfun/Step-3.5-Flash":     { name: "Step 3.5 Flash",       group: "Open Source", description: "Sparse-MoE reasoning — ~3.9s",                   tier: "free" },
-  "MiniMaxAI/MiniMax-M2.7":     { name: "MiniMax M2.7",         group: "Open Source", description: "Engineering agent — ~4.5s",                     tier: "free" },
-  "moonshotai/Kimi-K2.5":       { name: "Kimi K2.5",            group: "Slow (6s+)", description: "Multimodal frontend coding — ~6s",               tier: "free" },
-  "Qwen/Qwen3.6-Max-Preview":   { name: "Qwen 3.6 Max Preview", group: "Slow (6s+)", description: "Agentic coding — ~8s",                           tier: "free" },
-  "Qwen/Qwen3.6-Plus":          { name: "Qwen 3.6 Plus",        group: "Slow (6s+)", description: "Heavy reasoning — ~10s (333 thinking steps)",    tier: "free" },
-  "moonshotai/Kimi-K2.6":       { name: "Kimi K2.6",            group: "Slow (6s+)", description: "Long-horizon coding — ~16s (slowest)",           tier: "free" },
-};
+// ── Custom provider upstream builder ─────────────────────────────────────────
+type CustomApiType = "openai" | "codex" | "anthropic";
 
-// Fallback static CC list (used if API unreachable)
-const CC_MODELS_FALLBACK: ModelDef[] = Object.entries(CC_MODEL_META).map(([id, meta]) => ({
-  id,
-  name: meta.name ?? id,
-  group: meta.group ?? "Other",
-  description: meta.description ?? "",
-  tier: meta.tier ?? "free",
-}));
-
-const CACHE_TTL_MS = 10 * 60 * 1000;
-
-// ── CC models cache (refreshed every 10 minutes) ──────────────────────────────
-let ccModelsCache: { models: ModelDef[]; fetchedAt: number } | null = null;
-let ccModelsFetch: Promise<ModelDef[]> | null = null; // coalesces concurrent cache misses
-
-async function fetchCcModels(apiKey: string): Promise<ModelDef[]> {
-  if (ccModelsCache && Date.now() - ccModelsCache.fetchedAt < CACHE_TTL_MS) {
-    return ccModelsCache.models;
-  }
-  // All concurrent cache-miss requests share a single in-flight fetch
-  if (ccModelsFetch) return ccModelsFetch;
-  ccModelsFetch = doFetchCcModels(apiKey).finally(() => { ccModelsFetch = null; });
-  return ccModelsFetch;
-}
-
-async function doFetchCcModels(apiKey: string): Promise<ModelDef[]> {
-  try {
-    const res = await fetch(COMMANDCODE_MODELS_URL, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "x-command-code-version": COMMANDCODE_VERSION,
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json() as { data?: Array<{ id: string; owned_by?: string }> };
-    const rawModels = data.data ?? [];
-
-    const mapped: ModelDef[] = rawModels.map((m) => {
-      const meta = CC_MODEL_META[m.id];
-      const autoGroup = (() => {
-        if (m.id.startsWith("claude-") || m.id.startsWith("gpt-") || m.id.startsWith("google/")) return "CC Pro Required";
-        if (m.owned_by) return m.owned_by;
-        return "Other";
-      })();
-      const autoTier = (m.id.startsWith("claude-") || m.id.startsWith("gpt-") || m.id.startsWith("google/")) ? "pro" : "free";
-      return {
-        id: m.id,
-        name: meta?.name ?? m.id.split("/").pop() ?? m.id,
-        group: meta?.group ?? autoGroup,
-        description: meta?.description ?? `Model ID: ${m.id}`,
-        tier: (meta?.tier ?? autoTier) as "free" | "pro",
-      };
-    });
-
-    const knownOrder = Object.keys(CC_MODEL_META);
-    mapped.sort((a, b) => {
-      const ai = knownOrder.indexOf(a.id);
-      const bi = knownOrder.indexOf(b.id);
-      if (ai === -1 && bi === -1) return a.id.localeCompare(b.id);
-      if (ai === -1) return 1;
-      if (bi === -1) return -1;
-      return ai - bi;
-    });
-
-    ccModelsCache = { models: mapped, fetchedAt: Date.now() };
-    return mapped;
-  } catch {
-    return ccModelsCache?.models ?? CC_MODELS_FALLBACK;
-  }
-} // end doFetchCcModels
-
-// ── RC models cache (public endpoint, no auth needed) ─────────────────────────
-let rcModelsCache: { models: ModelDef[]; fetchedAt: number } | null = null;
-let rcModelsFetch: Promise<ModelDef[]> | null = null; // coalesces concurrent cache misses
-
-function prettifyRcModelName(raw: string): string {
-  return raw
-    .replace(/^(claude)-(opus|sonnet|haiku)-(\d[\d-]*)/i, (_, __, tier, v) =>
-      `Claude ${tier.charAt(0).toUpperCase() + tier.slice(1)} ${v}`)
-    .replace(/^gemini-(\d+\.\d+)-(.*)/i, (_, v, tier) => `Gemini ${v} ${tier}`)
-    .replace(/^gpt-(\S+)/i, (_, v) => `GPT-${v}`)
-    .replace(/^deepseek-(v\d+)-(flash|pro)/i, (_, v, tier) =>
-      `DeepSeek ${v} ${tier.charAt(0).toUpperCase() + tier.slice(1)}`)
-    .replace(/^codex-auto-review$/i, "Codex Auto Review")
-    .replace(/-/g, " ")
-    .replace(/\b(\w)/g, (c) => c.toUpperCase())
-    // Undo over-capitalisation of version segments that look like "4 5"
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-async function fetchRcModels(): Promise<ModelDef[]> {
-  if (rcModelsCache && Date.now() - rcModelsCache.fetchedAt < CACHE_TTL_MS) {
-    return rcModelsCache.models;
-  }
-  if (rcModelsFetch) return rcModelsFetch;
-  rcModelsFetch = doFetchRcModels().finally(() => { rcModelsFetch = null; });
-  return rcModelsFetch;
-}
-
-async function doFetchRcModels(): Promise<ModelDef[]> {
-  try {
-    const res = await fetch(RC_MODELS_PUBLIC);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const data = await res.json() as {
-      upstreams: Array<{
-        name: string;
-        prefix: string;
-        models: Array<{ name: string; is_available: boolean }>;
-      }>;
+function buildCustomUpstream(
+  base: string,
+  type: CustomApiType,
+  apiKey: string,
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  system: string,
+): { url: string; headers: Record<string, string>; body: unknown } {
+  if (type === "anthropic") {
+    return {
+      url: `${base}/v1/messages`,
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      body: { model, messages, system, max_tokens: 16000, stream: true },
     };
+  }
+  if (type === "codex") {
+    return {
+      url: `${base}/v1/responses`,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: { model, input: messages.map(m => ({ role: m.role, content: m.content })), stream: true },
+    };
+  }
+  // openai (default)
+  const allMsgs = system
+    ? [{ role: "system", content: system }, ...messages]
+    : messages;
+  return {
+    url: `${base}/v1/chat/completions`,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: { model, messages: allMsgs, stream: true },
+  };
+}
 
-    const models: ModelDef[] = [];
-
-    for (const upstream of data.upstreams) {
-      if (RC_SKIP_PREFIXES.has(upstream.prefix)) continue;
-      const group = RC_CHANNEL_GROUP[upstream.prefix] ?? upstream.name;
-
-      for (const m of upstream.models) {
-        models.push({
-          // encode channel prefix and model name separated by |
-          id: `rc:${upstream.prefix}|${m.name}`,
-          name: prettifyRcModelName(m.name),
-          group,
-          description: `${m.name} • ${group} (${m.is_available ? "available" : "unavailable"})`,
-          tier: "free",
-          provider: "rightcode",
-        });
+function parseCustomChunk(type: CustomApiType, jsonStr: string, lastEvent: string): string | null {
+  try {
+    const chunk = JSON.parse(jsonStr) as Record<string, unknown>;
+    if (type === "anthropic") {
+      if (lastEvent === "content_block_delta") {
+        const delta = chunk.delta as { type?: string; text?: string } | undefined;
+        if (delta?.type === "text_delta" && delta.text) return delta.text;
       }
+    } else if (type === "codex") {
+      const delta = chunk as { type?: string; delta?: { text?: string } };
+      if (delta.type === "response.output_text.delta" && delta.delta?.text) return delta.delta.text;
+    } else {
+      const choices = chunk.choices as Array<{ delta?: { content?: string } }> | undefined;
+      const content = choices?.[0]?.delta?.content;
+      if (content) return content;
     }
-
-    rcModelsCache = { models, fetchedAt: Date.now() };
-    return models;
-  } catch (err) {
-    return rcModelsCache?.models ?? [];
-  }
-}
-
-// Parse rc:{channelPrefix}|{modelName} → { prefix, modelName }
-// Falls back to guessing prefix for old-format rc:{modelName} IDs.
-function parseRcModelId(id: string): { prefix: string; modelName: string } {
-  const rest = id.startsWith("rc:") ? id.slice(3) : id;
-  const pipe = rest.indexOf("|");
-  if (pipe !== -1) {
-    return { prefix: rest.slice(0, pipe), modelName: rest.slice(pipe + 1) };
-  }
-  // Legacy / fallback: guess channel from model name
-  if (rest.startsWith("claude-"))   return { prefix: "/claude",    modelName: rest };
-  if (rest.startsWith("gemini-"))   return { prefix: "/gemini",    modelName: rest };
-  if (rest.startsWith("deepseek-")) return { prefix: "/deepseek",  modelName: rest };
-  return { prefix: "/codex-pro", modelName: rest };
-}
-
-// Build the upstream URL for an RC model
-function getRcUpstreamUrl(prefix: string, modelName: string): string {
-  const apiType = RC_CHANNEL_API_TYPE[prefix] ?? "openai";
-  if (apiType === "gemini")
-    return `${RC_BASE}${prefix}/rbeta/models/${modelName}:streamGenerateContent?alt=sse`;
-  if (apiType === "anthropic")
-    return `${RC_BASE}${prefix}/v1/messages`;
-  if (apiType === "openai-responses")
-    return `${RC_BASE}${prefix}/v1/responses`;
-  // "openai"
-  return `${RC_BASE}${prefix}/v1/chat/completions`;
+  } catch { /* skip */ }
+  return null;
 }
 
 // ── AG models cache (per-key, 10 min TTL, max 200 entries) ───────────────────
@@ -314,81 +136,22 @@ async function doFetchAgModels(apiKey: string): Promise<ModelDef[]> {
   }
 }
 
-// ── GET /chat/models — CommandCode models (dynamic, cached) ──────────────────
-router.get("/chat/models", async (req, res) => {
-  const apiKey =
-    process.env.COMMANDCODE_API_KEY ||
-    (await (async () => { const k = await getNextCcKey(); return k?.key; })());
-  if (!apiKey) {
-    res.json({ models: CC_MODELS_FALLBACK });
-    return;
-  }
-  const { getSettings } = await import("../lib/settings.js");
-  const overrides = getSettings().modelOverrides;
-  const allModels = await fetchCcModels(apiKey);
-  const models = allModels
-    .filter(m => !overrides[m.id]?.hidden)
-    .map(m => overrides[m.id]?.displayName ? { ...m, name: overrides[m.id].displayName! } : m)
-    .map(m => overrides[m.id]?.price ? { ...m, price: overrides[m.id].price } : m);
+// ── GET /chat/models — returns active routing rules as models ────────────────
+router.get("/chat/models", async (_req, res) => {
+  const rules = await db.select().from(routingRulesTable).where(eq(routingRulesTable.isActive, true));
+  const models = rules.map(r => ({ id: `route:${r.name}`, name: r.name, description: r.description }));
   res.json({ models });
 });
 
-// ── GET /chat/rc-pool-status — how many active server-side RC keys exist ─────
-router.get("/chat/rc-pool-status", async (_req, res) => {
-  try {
-    const key = await getNextRcKey();
-    res.json({ active: key ? 1 : 0 });
-  } catch {
-    res.json({ active: 0 });
-  }
-});
+// ── GET /chat/rc-pool-status — always returns 0 (RC pool removed) ─────────────
+router.get("/chat/rc-pool-status", (_req, res) => res.json({ active: 0 }));
 
-// ── GET /chat/rc-models — Right Code models (public, cached 10 min) ──────────
-router.get("/chat/rc-models", async (req, res) => {
-  try {
-    const { getSettings } = await import("../lib/settings.js");
-    const overrides = getSettings().modelOverrides;
-    const allModels = await fetchRcModels();
-    const models = allModels
-      .filter(m => !overrides[m.id]?.hidden)
-      .map(m => overrides[m.id]?.displayName ? { ...m, name: overrides[m.id].displayName! } : m)
-      .map(m => overrides[m.id]?.price ? { ...m, price: overrides[m.id].price } : m);
-    res.json({ models });
-  } catch (err) {
-    req.log.error({ err }, "Failed to fetch Right Code models");
-    res.status(500).json({ error: "Failed to fetch Right Code models" });
-  }
-});
+// ── GET /chat/rc-models — returns empty (RC removed, use routing rules) ────────
+router.get("/chat/rc-models", (_req, res) => res.json({ models: [] }));
 
-// ── GET /chat/models-catalog — combined catalog for user dashboard ────────────
-// Returns CC models + RC channels + active routing rules, with overrides applied.
-// Public (no auth required) — used by user-facing Models page.
+// ── GET /chat/models-catalog — returns active routing rules as model catalog ──
+// All traffic is now routed through Smart Routing rules configured in admin panel.
 router.get("/chat/models-catalog", async (_req, res) => {
-  const { getSettings } = await import("../lib/settings.js");
-  const overrides = getSettings().modelOverrides;
-
-  // ── CC models ────────────────────────────────────────────────────────────────
-  const ccApiKey =
-    process.env.COMMANDCODE_API_KEY ||
-    (await (async () => { const k = await getNextCcKey(); return k?.key; })());
-  const ccRaw = ccApiKey ? await fetchCcModels(ccApiKey) : CC_MODELS_FALLBACK;
-  const cc = ccRaw
-    .filter(m => !overrides[m.id]?.hidden)
-    .map(m => ({ ...m, name: overrides[m.id]?.displayName ?? m.name }));
-
-  // ── RC models grouped by channel ─────────────────────────────────────────────
-  const rcByChannel = new Map<string, { channel: string; group: string; models: ModelDef[] }>();
-  try {
-    const rcRaw = await fetchRcModels();
-    for (const m of rcRaw) {
-      if (overrides[m.id]?.hidden) continue;
-      const channel = m.id.replace(/^rc:/, "").split("|")[0] ?? "";
-      if (!rcByChannel.has(channel)) rcByChannel.set(channel, { channel, group: m.group, models: [] });
-      rcByChannel.get(channel)!.models.push({ ...m, name: overrides[m.id]?.displayName ?? m.name });
-    }
-  } catch { /* network failure — return empty RC list */ }
-
-  // ── Active routing rules ──────────────────────────────────────────────────────
   const rules = await db.select().from(routingRulesTable).where(eq(routingRulesTable.isActive, true));
   const routing = rules.map(r => ({
     id: r.id,
@@ -399,8 +162,7 @@ router.get("/chat/models-catalog", async (_req, res) => {
       modelId: p.modelId,
     })),
   }));
-
-  res.json({ cc, rc: [...rcByChannel.values()], routing });
+  res.json({ cc: [], rc: [], routing });
 });
 
 // ── GET /chat/ag-models — AiGoCode models (per-key, cached 10 min) ───────────
@@ -438,75 +200,41 @@ router.post("/proxy/claude/v1/messages", async (req, res) => {
   const xApiKey = req.headers["x-api-key"] as string | undefined;
   const authHeader = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
   const incomingKey = xApiKey || authHeader;
-
-  let rcKey: string | undefined;
   let userKeyId: string | undefined;
-
   if (incomingKey?.startsWith("sk-cc-")) {
     const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
-    if (!rows[0] || !rows[0].isActive) {
-      res.status(401).json({ type: "error", error: { type: "authentication_error", message: "Invalid or inactive CommandCode API key" } });
-      return;
-    }
+    if (!rows[0] || !rows[0].isActive) { res.status(401).json({ type: "error", error: { type: "authentication_error", message: "Invalid or inactive API key" } }); return; }
     userKeyId = rows[0].id;
-    const poolKey = await getNextRcKey();
-    if (!poolKey) { res.status(503).json({ type: "error", error: { type: "api_error", message: "No RC keys in pool" } }); return; }
-    rcKey = poolKey.key;
-  } else if (incomingKey) {
-    rcKey = incomingKey; // direct RC key
-  } else {
-    const poolKey = await getNextRcKey();
-    if (!poolKey) { res.status(503).json({ type: "error", error: { type: "api_error", message: "No RC keys in pool" } }); return; }
-    rcKey = poolKey.key;
   }
-
+  const requestedModel = (req.body as { model?: string }).model || "claude";
+  const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  const result = await resolveRoute(ruleName);
+  if (!result.ok) {
+    const msg = result.reason === "all_rate_limited" ? `All providers for "${ruleName}" are rate-limited.` : `No routing rule for "\". Create one in Smart Routing.`;
+    res.status(result.reason === "all_rate_limited" ? 429 : 404).json({ type: "error", error: { type: "api_error", message: msg } }); return;
+  }
+  const { apiKey: rKey, apiBaseUrl: rUrl } = result.route;
+  if (!rKey || !rUrl) { res.status(400).json({ type: "error", error: { type: "api_error", message: "No API key/URL in routing rule." } }); return; }
   try {
-    // Build forwarded headers: pass ALL original Claude Code headers transparently,
-    // only swap out the API key so right.codes accepts the request.
-    const forwardHeaders: Record<string, string> = {};
+    const fwdH: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      if (
-        k === "host" || k === "connection" || k === "transfer-encoding" ||
-        k === "content-length" || k === "x-api-key" || k === "authorization"
-      ) continue; // strip hop-by-hop + auth headers we'll replace
-      if (typeof v === "string") forwardHeaders[k] = v;
-      else if (Array.isArray(v)) forwardHeaders[k] = v.join(", ");
+      if (["host","connection","transfer-encoding","content-length","x-api-key","authorization"].includes(k)) continue;
+      if (typeof v === "string") fwdH[k] = v; else if (Array.isArray(v)) fwdH[k] = v.join(", ");
     }
-    // Inject RC key as x-api-key (Anthropic format)
-    forwardHeaders["x-api-key"] = rcKey;
-    // Ensure content-type is set
-    if (!forwardHeaders["content-type"]) forwardHeaders["content-type"] = "application/json";
-
-    const upstream = await fetch(`${RC_BASE}/claude/v1/messages`, {
-      method: "POST",
-      headers: forwardHeaders,
-      body: JSON.stringify(req.body),
-    });
-
-    if (userKeyId) {
-      db.update(userKeysTable)
-        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
-        .where(eq(userKeysTable.id, userKeyId))
-        .catch(() => {});
-    }
-
+    fwdH["x-api-key"] = rKey;
+    if (!fwdH["content-type"]) fwdH["content-type"] = "application/json";
+    const base = rUrl.replace(/\/$/, "");
+    const upstream = await fetch(`${base}/v1/messages`, { method: "POST", headers: fwdH, body: JSON.stringify(req.body) });
+    if (userKeyId) db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)).catch(() => {});
     const ct = upstream.headers.get("content-type") || "application/json";
     res.status(upstream.status).setHeader("content-type", ct);
-    if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text();
-      res.send(text); return;
-    }
+    if (!upstream.ok || !upstream.body) { const text = await upstream.text(); res.send(text); return; }
     const reader = upstream.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
-    }
+    while (true) { const { done, value } = await reader.read(); if (done) break; res.write(value); }
     res.end();
   } catch (err) {
     req.log.error({ err }, "Claude proxy error");
-    if (!res.headersSent) res.status(500).json({ type: "error", error: { type: "api_error", message: String(err) } });
-    else res.end();
+    if (!res.headersSent) res.status(500).json({ type: "error", error: { type: "api_error", message: String(err) } }); else res.end();
   }
 });
 
@@ -524,72 +252,43 @@ router.get("/proxy/codex/v1/models", (_req, res) => {
 });
 
 router.post("/proxy/codex/v1/chat/completions", async (req, res) => {
-  const authHeader = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
-  const xApiKey = req.headers["x-api-key"] as string | undefined;
-  const incomingKey = authHeader || xApiKey;
-
-  let rcKey: string | undefined;
+  const authH = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
+  const xKey = req.headers["x-api-key"] as string | undefined;
+  const inKey = authH || xKey;
   let userKeyId: string | undefined;
-
-  if (incomingKey?.startsWith("sk-cc-")) {
-    const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
-    if (!rows[0] || !rows[0].isActive) {
-      res.status(401).json({ error: { message: "Invalid or inactive CommandCode API key", type: "invalid_request_error", code: "invalid_api_key" } });
-      return;
-    }
+  if (inKey?.startsWith("sk-cc-")) {
+    const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, inKey)).limit(1);
+    if (!rows[0] || !rows[0].isActive) { res.status(401).json({ error: { message: "Invalid or inactive API key", type: "invalid_request_error" } }); return; }
     userKeyId = rows[0].id;
-    const poolKey = await getNextRcKey();
-    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
-    rcKey = poolKey.key;
-  } else if (incomingKey) {
-    rcKey = incomingKey;
-  } else {
-    const poolKey = await getNextRcKey();
-    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
-    rcKey = poolKey.key;
   }
-
+  const requestedModel = (req.body as { model?: string }).model || "codex";
+  const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  const result = await resolveRoute(ruleName);
+  if (!result.ok) {
+    const msg = result.reason === "all_rate_limited" ? `All providers for "${ruleName}" are rate-limited.` : `No routing rule for "\". Create one in Smart Routing.`;
+    res.status(result.reason === "all_rate_limited" ? 429 : 503).json({ error: { message: msg, type: "api_error" } }); return;
+  }
+  const { apiKey: rKey, apiBaseUrl: rUrl } = result.route;
+  if (!rKey || !rUrl) { res.status(400).json({ error: { message: "No API key/URL in routing rule.", type: "api_error" } }); return; }
   try {
-    const fwdCodex: Record<string, string> = {};
+    const fwdH: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      if (k === "host" || k === "connection" || k === "transfer-encoding" || k === "content-length" || k === "authorization" || k === "x-api-key") continue;
-      if (typeof v === "string") fwdCodex[k] = v;
-      else if (Array.isArray(v)) fwdCodex[k] = v.join(", ");
+      if (["host","connection","transfer-encoding","content-length","authorization","x-api-key"].includes(k)) continue;
+      if (typeof v === "string") fwdH[k] = v; else if (Array.isArray(v)) fwdH[k] = v.join(", ");
     }
-    fwdCodex["authorization"] = `Bearer ${rcKey}`;
-    if (!fwdCodex["content-type"]) fwdCodex["content-type"] = "application/json";
-
-    const upstream = await fetch(`${RC_BASE}/codex-pro/v1/chat/completions`, {
-      method: "POST",
-      headers: fwdCodex,
-      body: JSON.stringify(req.body),
-    });
-
-
-    if (userKeyId) {
-      db.update(userKeysTable)
-        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
-        .where(eq(userKeysTable.id, userKeyId))
-        .catch(() => {});
-    }
-
+    fwdH["authorization"] = `Bearer ${rKey}`;
+    if (!fwdH["content-type"]) fwdH["content-type"] = "application/json";
+    const base = rUrl.replace(/\/$/, "");
+    const upstream = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: fwdH, body: JSON.stringify(req.body) });
+    if (userKeyId) db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)).catch(() => {});
     const ct = upstream.headers.get("content-type") || "application/json";
     res.status(upstream.status).setHeader("content-type", ct);
-    if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text();
-      res.send(text); return;
-    }
+    if (!upstream.ok || !upstream.body) { const text = await upstream.text(); res.send(text); return; }
     const reader = upstream.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
-    }
+    while (true) { const { done, value } = await reader.read(); if (done) break; res.write(value); }
     res.end();
   } catch (err) {
-    req.log.error({ err }, "Codex proxy error");
-    if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } });
-    else res.end();
+    if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } }); else res.end();
   }
 });
 
@@ -602,40 +301,50 @@ async function handleCodexResponses(req: import("express").Request, res: import(
   const xApiKey = req.headers["x-api-key"] as string | undefined;
   const incomingKey = authHeader || xApiKey;
 
-  let rcKey: string | undefined;
   let userKeyId: string | undefined;
 
   if (incomingKey?.startsWith("sk-cc-")) {
     const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
     if (!rows[0] || !rows[0].isActive) {
-      res.status(401).json({ error: { message: "Invalid or inactive CommandCode API key", type: "invalid_request_error", code: "invalid_api_key" } });
+      res.status(401).json({ error: { message: "Invalid or inactive API key", type: "invalid_request_error", code: "invalid_api_key" } });
       return;
     }
     userKeyId = rows[0].id;
-    const poolKey = await getNextRcKey();
-    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
-    rcKey = poolKey.key;
-  } else if (incomingKey) {
-    rcKey = incomingKey;
-  } else {
-    const poolKey = await getNextRcKey();
-    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
-    rcKey = poolKey.key;
+  }
+
+  // Resolve provider via Smart Routing
+  const requestedModel = (req.body as { model?: string }).model || "codex";
+  const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  const routeResult = await resolveRoute(ruleName);
+
+  if (!routeResult.ok) {
+    const msg = routeResult.reason === "all_rate_limited"
+      ? `All providers for "${ruleName}" are rate-limited. Try again shortly.`
+      : `No routing rule found for model "${requestedModel}". Create a Smart Routing rule in the admin panel.`;
+    res.status(routeResult.reason === "all_rate_limited" ? 429 : 404).json({ error: { message: msg, type: "api_error" } });
+    return;
+  }
+
+  const { apiKey: routeApiKey, apiBaseUrl } = routeResult.route;
+  if (!routeApiKey || !apiBaseUrl) {
+    res.status(400).json({ error: { message: "No API key or base URL configured in routing rule. Edit the rule and add a provider.", type: "api_error" } });
+    return;
   }
 
   try {
-    const fwdResp: Record<string, string> = {};
+    const fwdHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      if (k === "host" || k === "connection" || k === "transfer-encoding" || k === "content-length" || k === "authorization" || k === "x-api-key") continue;
-      if (typeof v === "string") fwdResp[k] = v;
-      else if (Array.isArray(v)) fwdResp[k] = v.join(", ");
+      if (["host","connection","transfer-encoding","content-length","authorization","x-api-key"].includes(k)) continue;
+      if (typeof v === "string") fwdHeaders[k] = v;
+      else if (Array.isArray(v)) fwdHeaders[k] = v.join(", ");
     }
-    fwdResp["authorization"] = `Bearer ${rcKey}`;
-    if (!fwdResp["content-type"]) fwdResp["content-type"] = "application/json";
+    fwdHeaders["authorization"] = `Bearer ${routeApiKey}`;
+    if (!fwdHeaders["content-type"]) fwdHeaders["content-type"] = "application/json";
 
-    const upstream = await fetch(`${RC_BASE}/codex/v1/responses`, {
+    const base = apiBaseUrl.replace(/\/$/, "");
+    const upstream = await fetch(`${base}/v1/responses`, {
       method: "POST",
-      headers: fwdResp,
+      headers: fwdHeaders,
       body: JSON.stringify(req.body),
     });
 
@@ -677,39 +386,20 @@ router.post("/codex/v1/responses",       handleCodexResponses);
 router.post("/chat/stream", async (req, res) => {
   const headerKey = req.headers["x-api-key"] as string | undefined;
 
-  let resolvedApiKey: string | undefined;
   let userKeyId: string | undefined;
-  let ccKeyId: string | undefined;
   const startTime = Date.now();
 
-  if (headerKey) {
-    if (headerKey.startsWith("sk-cc-")) {
-      const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, headerKey)).limit(1);
-      if (!rows[0]) { res.status(403).json({ error: "Invalid API key" }); return; }
-      if (!rows[0].isActive) { res.status(403).json({ error: "API key is disabled" }); return; }
-      const { checkUserRpm } = await import("../lib/user-rate-limiter.js");
-      if (!checkUserRpm(rows[0].id, rows[0].rpmLimit)) {
-        res.setHeader("Retry-After", "60");
-        res.status(429).json({ error: `Rate limit exceeded — max ${rows[0].rpmLimit} requests/minute for this key` });
-        return;
-      }
-      userKeyId = rows[0].id;
-      const poolKey = await getNextCcKey();
-      if (!poolKey) { res.status(503).json({ error: "No active CommandCode API keys in pool" }); return; }
-      resolvedApiKey = poolKey.key;
-      ccKeyId = poolKey.id;
-    } else {
-      resolvedApiKey = headerKey;
+  if (headerKey?.startsWith("sk-cc-")) {
+    const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, headerKey)).limit(1);
+    if (!rows[0]) { res.status(403).json({ error: "Invalid API key" }); return; }
+    if (!rows[0].isActive) { res.status(403).json({ error: "API key is disabled" }); return; }
+    const { checkUserRpm } = await import("../lib/user-rate-limiter.js");
+    if (!checkUserRpm(rows[0].id, rows[0].rpmLimit)) {
+      res.setHeader("Retry-After", "60");
+      res.status(429).json({ error: `Rate limit exceeded — max ${rows[0].rpmLimit} requests/minute for this key` });
+      return;
     }
-  } else {
-    const poolKey = await getNextCcKey();
-    if (poolKey) { resolvedApiKey = poolKey.key; ccKeyId = poolKey.id; }
-    else { resolvedApiKey = process.env.COMMANDCODE_API_KEY; }
-  }
-
-  if (!resolvedApiKey) {
-    res.status(500).json({ error: "No API key configured" });
-    return;
+    userKeyId = rows[0].id;
   }
 
   type WireFile = { data: string; mimeType: string; name?: string };
@@ -814,13 +504,14 @@ router.post("/chat/stream", async (req, res) => {
   let currentRateLimitKey = "";
   let currentRpmLimit = 0;
 
-  if (isRoutingModel(requestedModel)) {
-    routeRuleName = extractRuleName(requestedModel);
+  // ALL requests go through Smart Routing
+  routeRuleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  {
     const result = await resolveRoute(routeRuleName);
     if (!result.ok) {
       const errMsg = result.reason === "all_rate_limited"
-        ? `All providers in routing rule "${routeRuleName}" are rate-limited. Try again shortly.`
-        : `Routing rule "${routeRuleName}" not found or inactive.`;
+        ? `All providers for "${routeRuleName}" are rate-limited. Try again shortly.`
+        : `No routing rule found for model "${requestedModel}". Please create a Smart Routing rule in the admin panel.`;
       res.status(result.reason === "all_rate_limited" ? 429 : 404).json({ error: errMsg });
       return;
     }
@@ -852,7 +543,7 @@ router.post("/chat/stream", async (req, res) => {
       db.insert(requestLogsTable).values({
         id: randomUUID(),
         userKeyId: userKeyId ?? null,
-        ccKeyId: ccKeyId ?? null,
+        ccKeyId: null,
         model: selectedModel,
         elapsedMs,
         status,
@@ -866,7 +557,6 @@ router.post("/chat/stream", async (req, res) => {
           .where(eq(userKeysTable.id, userKeyId))
       );
     }
-    if (ccKeyId) ops.push(incrementCcKeyUsage(ccKeyId));
     Promise.all(ops).catch(() => {});
   };
 
@@ -909,288 +599,7 @@ router.post("/chat/stream", async (req, res) => {
 
   // ── Provider execution loop (retries via routing chain on upstream errors) ──
   routingLoop: while (true) {
-  const isRightCode = selectedModel.startsWith("rc:");
   const isAiGoCode  = selectedModel.startsWith("ag:");
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // RIGHT CODE path
-  // ════════════════════════════════════════════════════════════════════════════
-  if (isRightCode) {
-    const userRcKey = req.headers["x-rightcode-key"] as string | undefined;
-    let rcKey = userRcKey;
-    let rcPoolKeyId: string | undefined;
-
-    if (!rcKey) {
-      // Fall back to server-side RC key pool
-      const poolKey = await getNextRcKey();
-      if (poolKey) {
-        rcKey = poolKey.key;
-        rcPoolKeyId = poolKey.id;
-      } else {
-        res.status(400).json({
-          error: "Right Code API key required. Add your key in System Configuration, or ask the admin to add pool keys.",
-        });
-        return;
-      }
-    }
-
-    const { prefix, modelName } = parseRcModelId(selectedModel);
-    const apiType = RC_CHANNEL_API_TYPE[prefix] ?? "openai";
-    const upstreamUrl = getRcUpstreamUrl(prefix, modelName);
-    const systemMsg = system || "You are a helpful AI assistant.";
-
-    req.log.info({ prefix, modelName, apiType, upstreamUrl }, "RC stream request");
-
-    // ── /claude Official: use @anthropic-ai/sdk directly ─────────────────────
-    // right.codes /claude channel requires an exact Claude Code CLI request:
-    // Bearer auth (ANTHROPIC_AUTH_TOKEN), correct stainless SDK headers, thinking
-    // param, temperature:1 — the SDK generates all of this automatically.
-    if (prefix === "/claude") {
-      // SDK version 0.100.x corresponds to Claude Code 2.x releases.
-      // user-agent must be consistent with the SDK's own stainless headers.
-      const client = new Anthropic({
-        authToken: rcKey,
-        baseURL: `${RC_BASE}/claude`,
-        defaultHeaders: {
-          "user-agent": "claude-code/2.1.148",
-          "x-claude-code-disable-nonessential-traffic": "1",
-          "x-app": "cli",
-          "anthropic-beta": "claudecode-2025-05-14,interleaved-thinking-2025-05-14,files-api-2025-04-14,output-128k-2025-02-19,extended-cache-ttl-2025-04-11",
-        },
-      });
-
-      startSse();
-      try {
-        const sdkMessages: Anthropic.MessageParam[] = messages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: buildAnthropicContent(m.content, m.images) as Anthropic.ContentBlockParam[] | string,
-        }));
-
-        const stream = client.messages.stream({
-          model: modelName,
-          max_tokens: 32000,
-          messages: sdkMessages,
-          ...(systemMsg ? { system: systemMsg } : {}),
-          thinking: { type: "adaptive", budget_tokens: 10000 },
-          temperature: 1,
-        }, { signal: clientAbort.signal });
-
-        for await (const event of stream) {
-          if (event.type === "content_block_delta") {
-            const delta = event.delta;
-            if (delta.type === "text_delta") {
-              sendText(delta.text);
-            } else if (delta.type === "thinking_delta") {
-              res.write(`data: ${JSON.stringify({ type: "reasoning-delta", id: "0", text: delta.thinking })}\n\n`);
-              flush(res);
-            }
-          }
-        }
-
-        res.write("data: [DONE]\n\n");
-        flush(res);
-        logRequest("ok");
-        if (rcPoolKeyId) incrementRcKeyUsage(rcPoolKeyId).catch(() => {});
-        res.end();
-      } catch (err) {
-        if (isAbort(err)) { if (!res.writableEnded) res.end(); return; }
-        const errStr = String(err);
-        req.log.error({ err }, "Anthropic SDK error for /claude channel");
-        logRequest("error", errStr);
-        if (rcPoolKeyId && (errStr.includes("401") || errStr.includes("403"))) {
-          markRcKeyInvalid(rcPoolKeyId).catch(() => {});
-        }
-        if (!res.headersSent) {
-          if (await tryFallback()) continue routingLoop;
-          res.status(500).json({ error: errStr });
-        } else {
-          res.write(`data: ${JSON.stringify({ type: "error", error: errStr })}\n\n`);
-          res.end();
-        }
-      }
-      return;
-    }
-
-    let upstreamHeaders: Record<string, string>;
-    let upstreamBody: Record<string, unknown>;
-
-    if (apiType === "anthropic") {
-      // ── Anthropic-compatible (/claude-aws, /deepseek/anthropic) ──────────
-      upstreamHeaders = {
-        "Content-Type": "application/json",
-        "x-api-key": rcKey,
-        "anthropic-version": "2023-06-01",
-      };
-      upstreamBody = {
-        model: modelName,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: buildAnthropicContent(m.content, m.images),
-        })),
-        system: systemMsg,
-        max_tokens: 16000,
-        stream: true,
-      };
-    } else if (apiType === "gemini") {
-      // ── Gemini-compatible ─────────────────────────────────────────────────
-      upstreamHeaders = {
-        "Content-Type": "application/json",
-        "x-api-key": rcKey,
-      };
-      upstreamBody = {
-        contents: messages.map((m) => ({
-          role: m.role === "assistant" ? "model" : "user",
-          parts: buildGeminiParts(m.content, m.images),
-        })),
-        systemInstruction: systemMsg ? { parts: [{ text: systemMsg }] } : undefined,
-        generationConfig: { temperature: 1 },
-      };
-    } else if (apiType === "openai-responses") {
-      // ── OpenAI Responses API (/v1/responses) ─────────────────────────────
-      upstreamHeaders = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${rcKey}`,
-      };
-      const inputMsgs: unknown[] = systemMsg
-        ? [{ role: "system", content: systemMsg }, ...messages.map((m) => ({
-            role: m.role,
-            content: buildOpenAIContent(m.content, m.images),
-          }))]
-        : messages.map((m) => ({
-            role: m.role,
-            content: buildOpenAIContent(m.content, m.images),
-          }));
-      upstreamBody = {
-        model: modelName,
-        input: inputMsgs,
-        stream: true,
-      };
-    } else {
-      // ── OpenAI Chat Completions (/v1/chat/completions) ────────────────────
-      upstreamHeaders = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${rcKey}`,
-      };
-      const allMsgs: unknown[] = systemMsg
-        ? [{ role: "system", content: systemMsg }, ...messages.map((m) => ({
-            role: m.role,
-            content: buildOpenAIContent(m.content, m.images),
-          }))]
-        : messages.map((m) => ({
-            role: m.role,
-            content: buildOpenAIContent(m.content, m.images),
-          }));
-      upstreamBody = { model: modelName, messages: allMsgs, stream: true };
-    }
-
-    try {
-      const upstream = await fetch(upstreamUrl, {
-        method: "POST",
-        headers: upstreamHeaders,
-        body: JSON.stringify(upstreamBody),
-        signal: clientAbort.signal,
-      });
-
-      if (!upstream.ok) {
-        const text = await upstream.text();
-        req.log.error({ status: upstream.status, body: text, upstreamUrl }, "Right Code API error");
-        if (rcPoolKeyId && (upstream.status === 401 || upstream.status === 403)) {
-          markRcKeyInvalid(rcPoolKeyId).catch(() => {});
-        }
-        let userMessage = text.slice(0, 300);
-        // Improve "anomaly detected" / auth errors
-        if (upstream.status === 400 && text.includes("anomaly")) {
-          userMessage = "right.codes رفض الطلب (anomaly detected). قد يكون المفتاح مرتبطاً بجلسة محددة ولا يعمل عبر السيرفر.";
-        } else if (upstream.status === 401 || upstream.status === 403) {
-          userMessage = `مفتاح Right Code غير صالح أو انتهت صلاحيته. (${upstream.status})`;
-        }
-        if (upstream.status === 429) penalizeRateLimit(currentRateLimitKey, currentRpmLimit);
-        if (await tryFallback()) continue routingLoop;
-        logRequest("error", userMessage.slice(0, 255));
-        res.status(upstream.status).json({ error: userMessage });
-        return;
-      }
-
-      startSse();
-      if (!upstream.body) { logRequest("ok"); res.end(); return; }
-
-      const reader = upstream.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let lastEvent = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            lastEvent = line.slice(6).trim();
-            continue;
-          }
-          if (!line.startsWith("data:")) { lastEvent = ""; continue; }
-          const jsonStr = line.slice(5).trim();
-          if (jsonStr === "[DONE]") { lastEvent = ""; continue; }
-          try {
-            const chunk = JSON.parse(jsonStr) as Record<string, unknown>;
-
-            if (apiType === "openai" || apiType === "openai-responses") {
-              // OpenAI chat completions delta
-              const choices = chunk.choices as Array<{ delta?: { content?: string } }> | undefined;
-              const content = choices?.[0]?.delta?.content;
-              if (content) { sendText(content); lastEvent = ""; continue; }
-
-              // OpenAI responses API delta (event: response.output_text.delta)
-              if (lastEvent === "response.output_text.delta") {
-                const delta = chunk.delta as string | undefined;
-                if (delta) sendText(delta);
-              } else if (chunk.type === "response.output_text.delta") {
-                const delta = chunk.delta as string | undefined;
-                if (delta) sendText(delta);
-              }
-            } else if (apiType === "anthropic") {
-              if (lastEvent === "content_block_delta") {
-                const delta = chunk.delta as { type?: string; text?: string; thinking?: string } | undefined;
-                if (delta?.type === "text_delta" && delta.text) {
-                  sendText(delta.text);
-                } else if (delta?.type === "thinking_delta" && delta.thinking) {
-                  // Forward thinking content as reasoning-delta (same format as CC)
-                  res.write(`data: ${JSON.stringify({ type: "reasoning-delta", id: "0", text: delta.thinking })}\n\n`);
-                  flush(res);
-                }
-              }
-            } else if (apiType === "gemini") {
-              const candidates = chunk.candidates as Array<{
-                content?: { parts?: Array<{ text?: string }> };
-              }> | undefined;
-              const text = candidates?.[0]?.content?.parts?.[0]?.text;
-              if (text) sendText(text);
-            }
-
-            lastEvent = "";
-          } catch { /* skip malformed */ }
-        }
-      }
-
-      res.write("data: [DONE]\n\n");
-      flush(res);
-      logRequest("ok");
-      if (rcPoolKeyId) incrementRcKeyUsage(rcPoolKeyId).catch(() => {});
-      res.end();
-    } catch (err) {
-      req.log.error({ err }, "Error proxying to Right Code");
-      logRequest("error", String(err));
-      if (!res.headersSent) {
-        if (await tryFallback()) continue routingLoop;
-        res.status(500).json({ error: "Internal server error" });
-      }
-    }
-    return;
-  }
 
   // ════════════════════════════════════════════════════════════════════════════
   // AIGOCODE path
@@ -1437,154 +846,9 @@ router.post("/chat/stream", async (req, res) => {
     return;
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // COMMANDCODE path (existing logic)
-  // ════════════════════════════════════════════════════════════════════════════
-  function resolveOssProvider(modelId: string): string | null {
-    if (modelId.startsWith("deepseek/")) return "deepseek";
-    if (modelId.startsWith("google/")) return "google";
-    if (modelId.startsWith("stepfun/")) return "stepfun";
-    if (modelId.startsWith("claude-")) return "anthropic";
-    if (modelId.startsWith("gpt-")) return "openai";
-    if (modelId.startsWith("moonshotai/")) return "moonshotai";
-    if (modelId.startsWith("MiniMaxAI/")) return "MiniMaxAI";
-    if (modelId.startsWith("zai-org/")) return "zai-org";
-    if (modelId.startsWith("Qwen/")) return "Qwen";
-    return null;
-  }
-
-  const osName = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "win32" : "linux";
-  const ossProvider = resolveOssProvider(selectedModel);
-
-  const upstreamHeaders: Record<string, string> = {
-    Authorization: `Bearer ${resolvedApiKey}`,
-    "Content-Type": "application/json",
-    "x-command-code-version": COMMANDCODE_VERSION,
-    "x-cli-environment": "production",
-    "x-project-slug": "chatbot-session",
-    "x-session-id": randomUUID(),
-    "User-Agent": "node-fetch",
-    ...(ossProvider ? { "x-oss-primary-provider": ossProvider } : {}),
-  };
-
-  const body = {
-    config: {
-      workingDir: "/workspace",
-      date: new Date().toISOString().split("T")[0],
-      environment: `${osName}-${os.arch()}, Node.js v20.0.0`,
-      structure: [],
-      isGitRepo: false,
-      currentBranch: "main",
-      mainBranch: "main",
-      gitStatus: "",
-      recentCommits: [],
-    },
-    memory: "",
-    taste: null,
-    skills: null,
-    permissionMode: "auto-accept",
-    params: {
-      model: selectedModel,
-      messages,
-      tools: [],
-      system: system || "You are a helpful AI assistant.",
-      max_tokens: 64000,
-      stream: true,
-    },
-  };
-
-  try {
-    const upstream = await fetch(COMMANDCODE_URL, {
-      method: "POST",
-      headers: upstreamHeaders,
-      body: JSON.stringify(body),
-      signal: clientAbort.signal,
-    });
-
-    if (!upstream.ok) {
-      const text = await upstream.text();
-      req.log.error({ status: upstream.status, body: text }, "CommandCode API error");
-      let userMessage = text;
-      let isModelNotInPlan = false;
-      try {
-        const outer = JSON.parse(text) as { error?: string };
-        const inner = JSON.parse(outer.error ?? "{}") as { error?: { code?: string; message?: string } };
-        const msg = inner?.error?.message ?? "";
-        const code = inner?.error?.code ?? "";
-        isModelNotInPlan = code === "MODEL_NOT_IN_PLAN";
-        if (isModelNotInPlan) {
-          userMessage = `MODEL_NOT_IN_PLAN: ${msg || "This model requires a Pro plan."}`;
-        } else if (msg) {
-          userMessage = msg;
-        }
-      } catch { /* keep raw */ }
-      // Only invalidate key for true auth failures — not for plan restrictions
-      if ((upstream.status === 401 || upstream.status === 403) && ccKeyId && !isModelNotInPlan) {
-        await markCcKeyInvalid(ccKeyId);
-      }
-      if (upstream.status === 429) penalizeRateLimit(currentRateLimitKey, currentRpmLimit);
-      if (await tryFallback()) continue routingLoop;
-      logRequest("error", userMessage);
-      res.status(upstream.status).json({ error: userMessage });
-      return;
-    }
-
-    startSse();
-    if (!upstream.body) { logRequest("ok"); res.end(); return; }
-
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    let lineBuffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      lineBuffer += decoder.decode(value, { stream: true });
-      const lines = lineBuffer.split("\n");
-      lineBuffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const chunk = JSON.parse(trimmed) as Record<string, unknown>;
-          const type = chunk.type as string | undefined;
-          if (type === "text-delta" || type === "reasoning-delta") {
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-            flush(res);
-          } else if (type === "finish" || type === "error") {
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-            flush(res);
-          }
-        } catch {
-          res.write(`data: ${trimmed}\n\n`);
-          flush(res);
-        }
-      }
-    }
-
-    if (lineBuffer.trim()) {
-      try {
-        const chunk = JSON.parse(lineBuffer.trim()) as Record<string, unknown>;
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-      } catch { /* ignore */ }
-    }
-
-    res.write("data: [DONE]\n\n");
-    flush(res);
-    logRequest("ok");
-    res.end();
-  } catch (err) {
-    if (isAbort(err)) { if (!res.writableEnded) res.end(); return; }
-    req.log.error({ err }, "Error proxying to CommandCode");
-    logRequest("error", String(err));
-    if (!res.headersSent) {
-      if (await tryFallback()) continue routingLoop;
-      res.status(500).json({ error: "Internal server error" });
-    }
-  }
-  break; // success — exit the routing loop
+  logRequest("error", "No provider handled this request");
+  if (!res.headersSent) res.status(500).json({ error: "No provider handler matched for this request" });
+  break;
   } // end routingLoop
 });
 
@@ -1595,145 +859,82 @@ router.post("/chat/stream", async (req, res) => {
 // Supports streaming and non-streaming. Only CC models (not rc:/ag: prefixed).
 // ════════════════════════════════════════════════════════════════════════════
 
-function resolveOssProviderStatic(modelId: string): string | null {
-  if (modelId.startsWith("deepseek/")) return "deepseek";
-  if (modelId.startsWith("google/")) return "google";
-  if (modelId.startsWith("stepfun/")) return "stepfun";
-  if (modelId.startsWith("claude-")) return "anthropic";
-  if (modelId.startsWith("gpt-")) return "openai";
-  if (modelId.startsWith("moonshotai/")) return "moonshotai";
-  if (modelId.startsWith("MiniMaxAI/")) return "MiniMaxAI";
-  if (modelId.startsWith("zai-org/")) return "zai-org";
-  if (modelId.startsWith("Qwen/")) return "Qwen";
-  return null;
-}
-
-// GET /v1/models — returns CC model list in OpenAI format
+// GET /v1/models — returns active routing rules as OpenAI-format model list
 router.get("/v1/models", async (req, res) => {
   const authHeader = req.headers["authorization"] as string | undefined;
   const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
   if (!bearerKey?.startsWith("sk-cc-")) {
-    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } });
-    return;
+    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } }); return;
   }
   const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, bearerKey)).limit(1);
   if (!rows[0] || !rows[0].isActive) {
-    res.status(401).json({ error: { message: "Invalid or disabled API key", type: "invalid_request_error", code: "invalid_api_key" } });
-    return;
+    res.status(401).json({ error: { message: "Invalid or disabled API key", type: "invalid_request_error", code: "invalid_api_key" } }); return;
   }
-  // Proxy CC models list
-  const resolvedKey = (await getNextCcKey())?.key ?? process.env.COMMANDCODE_API_KEY;
-  if (!resolvedKey) { res.status(503).json({ error: { message: "No CC keys configured", type: "server_error" } }); return; }
-  try {
-    const r = await fetch("https://api.commandcode.ai/provider/v1/models", {
-      headers: { Authorization: `Bearer ${resolvedKey}`, "x-command-code-version": COMMANDCODE_VERSION },
-      signal: AbortSignal.timeout(8000),
-    });
-    const data = await r.json() as { data?: { id: string }[] };
-    const models = (data.data ?? []).map((m) => ({ id: m.id, object: "model", created: 0, owned_by: "commandcode" }));
-    res.json({ object: "list", data: models });
-  } catch {
-    res.status(502).json({ error: { message: "Failed to fetch models", type: "server_error" } });
-  }
+  const rules = await db.select({ name: routingRulesTable.name, createdAt: routingRulesTable.createdAt })
+    .from(routingRulesTable).where(eq(routingRulesTable.isActive, true));
+  const models = rules.map(r => ({
+    id: `route:${r.name}`,
+    object: "model",
+    created: Math.floor(new Date(r.createdAt).getTime() / 1000),
+    owned_by: "smart-routing",
+  }));
+  res.json({ object: "list", data: models });
 });
 
-// POST /v1/chat/completions — OpenAI-compatible chat completions
+// POST /v1/chat/completions — OpenAI-compatible chat completions (via Smart Routing)
 router.post("/v1/chat/completions", async (req, res) => {
   const authHeader = req.headers["authorization"] as string | undefined;
   const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
-
   if (!bearerKey?.startsWith("sk-cc-")) {
-    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } });
-    return;
+    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } }); return;
   }
-
   const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, bearerKey)).limit(1);
   if (!rows[0]) { res.status(401).json({ error: { message: "Invalid API key", type: "invalid_request_error", code: "invalid_api_key" } }); return; }
   if (!rows[0].isActive) { res.status(401).json({ error: { message: "API key is disabled", type: "invalid_request_error", code: "invalid_api_key" } }); return; }
-
   const userKeyId = rows[0].id;
-  const poolKey = await getNextCcKey();
-  if (!poolKey) { res.status(503).json({ error: { message: "No active API keys in pool", type: "server_error" } }); return; }
-  const resolvedApiKey = poolKey.key;
-  const ccKeyId = poolKey.id;
   const startTime = Date.now();
-
   const clientAbort2 = new AbortController();
   req.on("close", () => { if (!res.writableEnded) clientAbort2.abort(); });
-
   type OAIMessage = { role: string; content: string };
-  const { model, messages, stream = false } = req.body as {
-    model?: string;
-    messages?: OAIMessage[];
-    stream?: boolean;
-  };
-
+  const { model, messages, stream = false } = req.body as { model?: string; messages?: OAIMessage[]; stream?: boolean };
   if (!messages || !Array.isArray(messages)) {
-    res.status(400).json({ error: { message: "messages array is required", type: "invalid_request_error" } });
-    return;
+    res.status(400).json({ error: { message: "messages array is required", type: "invalid_request_error" } }); return;
   }
-
-  // Extract system message from messages array (OpenAI convention)
-  const systemMsg = messages.find(m => m.role === "system")?.content ?? "You are a helpful AI assistant.";
-  const chatMessages = messages.filter(m => m.role !== "system");
-  const selectedModel = model ?? "zai-org/GLM-5";
-
-  const logRequest = (status: "ok" | "error", errorMsg?: string) => {
+  const requestedModel = model ?? "gpt-5.5";
+  const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  const routeResult = await resolveRoute(ruleName);
+  if (!routeResult.ok) {
+    const msg = routeResult.reason === "all_rate_limited" ? `All providers for "${ruleName}" are rate-limited.` : `No routing rule for "${requestedModel}". Create one in Smart Routing.`;
+    res.status(routeResult.reason === "all_rate_limited" ? 429 : 404).json({ error: { message: msg, type: "api_error" } }); return;
+  }
+  const { modelId: selectedModel, apiKey: rKey, apiBaseUrl: rUrl } = routeResult.route;
+  if (!rKey || !rUrl) { res.status(400).json({ error: { message: "No API key/URL configured in routing rule.", type: "api_error" } }); return; }
+  const logReq = (status: "ok" | "error", errorMsg?: string) => {
     const elapsedMs = Date.now() - startTime;
     Promise.all([
-      db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId, model: selectedModel, elapsedMs, status, errorMsg: errorMsg?.slice(0, 255) ?? null }),
+      db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId: null, model: selectedModel, elapsedMs, status, errorMsg: errorMsg?.slice(0, 255) ?? null }),
       db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)),
-      incrementCcKeyUsage(ccKeyId),
     ]).catch(() => {});
   };
-
-  const ossProvider = resolveOssProviderStatic(selectedModel);
-  const osName = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "win32" : "linux";
-
-  const upstreamHeaders: Record<string, string> = {
-    Authorization: `Bearer ${resolvedApiKey}`,
-    "Content-Type": "application/json",
-    "x-command-code-version": COMMANDCODE_VERSION,
-    "x-cli-environment": "production",
-    "x-project-slug": "chatbot-session",
-    "x-session-id": randomUUID(),
-    "User-Agent": "node-fetch",
-    ...(ossProvider ? { "x-oss-primary-provider": ossProvider } : {}),
-  };
-
-  const ccBody = {
-    config: {
-      workingDir: "/workspace",
-      date: new Date().toISOString().split("T")[0],
-      environment: `${osName}-${os.arch()}, Node.js v20.0.0`,
-      structure: [], isGitRepo: false, currentBranch: "main",
-      mainBranch: "main", gitStatus: "", recentCommits: [],
-    },
-    memory: "", taste: null, skills: null, permissionMode: "auto-accept",
-    params: { model: selectedModel, messages: chatMessages, tools: [], system: systemMsg, max_tokens: 64000, stream: true },
-  };
-
+  const systemMsg = messages.find(m => m.role === "system")?.content ?? "You are a helpful AI assistant.";
+  const chatMessages = messages.filter(m => m.role !== "system");
+  const base = rUrl.replace(/\/$/, "");
+  const completionId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  const created = Math.floor(Date.now() / 1000);
   try {
-    const upstream = await fetch(COMMANDCODE_URL, { method: "POST", headers: upstreamHeaders, body: JSON.stringify(ccBody), signal: clientAbort2.signal });
-
+    const fwdH = { "Content-Type": "application/json", Authorization: `Bearer ${rKey}` };
+    const upBody = { model: selectedModel, messages: [{ role: "system", content: systemMsg }, ...chatMessages], stream: true };
+    const upstream = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: fwdH, body: JSON.stringify(upBody), signal: clientAbort2.signal });
     if (!upstream.ok) {
       const text = await upstream.text();
-      if ((upstream.status === 401 || upstream.status === 403) && ccKeyId) await markCcKeyInvalid(ccKeyId);
-      if (upstream.status === 429 && ccKeyId) penalizeCcKey(ccKeyId);
-      logRequest("error", text.slice(0, 255));
-      res.status(upstream.status).json({ error: { message: text.slice(0, 300), type: "api_error" } });
-      return;
+      logReq("error", text.slice(0, 255));
+      res.status(upstream.status).json({ error: { message: text.slice(0, 300), type: "api_error" } }); return;
     }
-
-    if (!upstream.body) { logRequest("ok"); res.end(); return; }
-
-    const completionId = `chatcmpl-${randomUUID().replace(/-/g, "").slice(0, 24)}`;
-    const created = Math.floor(Date.now() / 1000);
+    if (!upstream.body) { logReq("ok"); res.end(); return; }
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let lineBuffer = "";
     let fullText = "";
-
     if (stream) {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -1742,104 +943,86 @@ router.post("/v1/chat/completions", async (req, res) => {
       (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
       res.flushHeaders();
       const flush = () => (res as unknown as { flush?: () => void }).flush?.();
-
-      // Role delta
       res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] })}\n\n`);
       flush();
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         lineBuffer += decoder.decode(value, { stream: true });
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() ?? "";
+        const lines = lineBuffer.split("\n"); lineBuffer = lines.pop() ?? "";
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
+          const trimmed = line.trim(); if (!trimmed) continue;
+          const jsonStr = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+          if (jsonStr === "[DONE]") continue;
           try {
-            const chunk = JSON.parse(trimmed) as { type?: string; text?: string };
-            if (chunk.type === "text-delta" && chunk.text) {
-              res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: { content: chunk.text }, finish_reason: null }] })}\n\n`);
-              flush();
-            }
-          } catch { /* skip */ }
+            const chunk = JSON.parse(jsonStr) as { choices?: Array<{ delta?: { content?: string } }> };
+            const content = chunk.choices?.[0]?.delta?.content;
+            if (content) { res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`); flush(); }
+          } catch { /* skip malformed */ }
         }
       }
-
       res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created, model: selectedModel, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
-      res.write("data: [DONE]\n\n");
-      flush();
-      logRequest("ok");
-      res.end();
+      res.write("data: [DONE]\n\n"); flush(); logReq("ok"); res.end();
     } else {
-      // Non-streaming: buffer full response
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const { done, value } = await reader.read(); if (done) break;
         lineBuffer += decoder.decode(value, { stream: true });
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() ?? "";
+        const lines = lineBuffer.split("\n"); lineBuffer = lines.pop() ?? "";
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const chunk = JSON.parse(trimmed) as { type?: string; text?: string };
-            if (chunk.type === "text-delta" && chunk.text) fullText += chunk.text;
-          } catch { /* skip */ }
+          const jsonStr = line.trim().startsWith("data:") ? line.trim().slice(5).trim() : line.trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+          try { const chunk = JSON.parse(jsonStr) as { choices?: Array<{ delta?: { content?: string } }> }; const content = chunk.choices?.[0]?.delta?.content; if (content) fullText += content; } catch { /* skip */ }
         }
       }
-      logRequest("ok");
+      logReq("ok");
       res.json({ id: completionId, object: "chat.completion", created, model: selectedModel, choices: [{ index: 0, message: { role: "assistant", content: fullText }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } });
     }
   } catch (err) {
-    req.log.error({ err }, "Error proxying to CommandCode (OpenAI compat)");
-    logRequest("error", String(err));
+    if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
+    logReq("error", String(err));
     if (!res.headersSent) res.status(500).json({ error: { message: "Internal server error", type: "server_error" } });
   }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // ANTHROPIC-COMPATIBLE ENDPOINT  — POST /v1/messages
-// Claude Code: ANTHROPIC_BASE_URL=https://domain/api  ANTHROPIC_API_KEY=sk-cc-*
-// Routes through RC /claude-aws key pool; passes request body through unchanged.
+// Routes through Smart Routing; Claude Code: ANTHROPIC_BASE_URL=<host>/api
 // ════════════════════════════════════════════════════════════════════════════
 
 router.post("/v1/messages", async (req, res) => {
-  // Claude Code sends x-api-key; other clients may use Authorization: Bearer
   const xApiKey = req.headers["x-api-key"] as string | undefined;
   const authHeader = req.headers["authorization"] as string | undefined;
   const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
   const userKey = xApiKey || bearerKey;
-
   if (!userKey?.startsWith("sk-cc-")) {
-    res.status(401).json({ type: "error", error: { type: "authentication_error", message: "API key required (sk-cc-...)" } });
-    return;
+    res.status(401).json({ type: "error", error: { type: "authentication_error", message: "API key required (sk-cc-...)" } }); return;
   }
   const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, userKey)).limit(1);
   if (!rows[0] || !rows[0].isActive) {
-    res.status(401).json({ type: "error", error: { type: "authentication_error", message: "Invalid or disabled API key" } });
-    return;
+    res.status(401).json({ type: "error", error: { type: "authentication_error", message: "Invalid or disabled API key" } }); return;
   }
-  const poolKey = await getNextRcKey();
-  if (!poolKey) {
-    res.status(503).json({ type: "error", error: { type: "overloaded_error", message: "No RC keys in pool — add Right Code keys in the Console to enable this endpoint." } });
-    return;
-  }
-
-  const startTime = Date.now();
   const userKeyId = rows[0].id;
+  const startTime = Date.now();
   const body = req.body as Record<string, unknown>;
-
+  const requestedModel = (body.model as string | undefined) ?? "claude";
+  const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  const routeResult = await resolveRoute(ruleName);
+  if (!routeResult.ok) {
+    const msg = routeResult.reason === "all_rate_limited" ? `All providers for "${ruleName}" are rate-limited.` : `No routing rule for "${requestedModel}". Create one in Smart Routing.`;
+    res.status(routeResult.reason === "all_rate_limited" ? 429 : 404).json({ type: "error", error: { type: "api_error", message: msg } }); return;
+  }
+  const { apiKey: rKey, apiBaseUrl: rUrl } = routeResult.route;
+  if (!rKey || !rUrl) { res.status(400).json({ type: "error", error: { type: "api_error", message: "No API key/URL configured in routing rule." } }); return; }
   const clientAbortMsg = new AbortController();
   req.on("close", () => { if (!res.writableEnded) clientAbortMsg.abort(); });
-
   let upstream: Response;
   try {
-    upstream = await fetch(`${RC_BASE}/claude-aws/v1/messages`, {
+    const base = rUrl.replace(/\/$/, "");
+    upstream = await fetch(`${base}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": poolKey.key,
+        "x-api-key": rKey,
         "anthropic-version": (req.headers["anthropic-version"] as string | undefined) ?? "2023-06-01",
         ...(req.headers["anthropic-beta"] ? { "anthropic-beta": req.headers["anthropic-beta"] as string } : {}),
       },
@@ -1848,28 +1031,19 @@ router.post("/v1/messages", async (req, res) => {
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
-    res.status(502).json({ type: "error", error: { type: "api_error", message: String(err) } });
-    return;
+    res.status(502).json({ type: "error", error: { type: "api_error", message: String(err) } }); return;
   }
-
   const logAnthropicReq = (status: "ok" | "error") => {
     const elapsedMs = Date.now() - startTime;
     Promise.all([
       db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId: null, model: String(body.model ?? "claude"), elapsedMs, status, errorMsg: null }),
       db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)),
-      incrementRcKeyUsage(poolKey.id),
     ]).catch(() => {});
   };
-
   if (!upstream.ok) {
-    const text = await upstream.text();
-    logAnthropicReq("error");
-    if (upstream.status === 401 || upstream.status === 403) markRcKeyInvalid(poolKey.id).catch(() => {});
-    if (upstream.status === 429) penalizeRcKey(poolKey.id);
-    res.status(upstream.status).set("Content-Type", "application/json").send(text);
-    return;
+    const text = await upstream.text(); logAnthropicReq("error");
+    res.status(upstream.status).set("Content-Type", "application/json").send(text); return;
   }
-
   const ct = upstream.headers.get("content-type") ?? "application/json";
   res.setHeader("Content-Type", ct);
   let heartbeatV1Msg: ReturnType<typeof setInterval> | null = null;
@@ -1879,398 +1053,90 @@ router.post("/v1/messages", async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
     (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
     res.flushHeaders();
-    // Heartbeat: SSE comment every 30 s so proxies/LBs don't drop idle connections
     heartbeatV1Msg = setInterval(() => { if (!res.writableEnded) res.write(":\n\n"); }, 30_000);
   }
-
-  if (!upstream.body) {
-    if (heartbeatV1Msg) clearInterval(heartbeatV1Msg);
-    logAnthropicReq("ok"); res.end(); return;
-  }
+  if (!upstream.body) { if (heartbeatV1Msg) clearInterval(heartbeatV1Msg); logAnthropicReq("ok"); res.end(); return; }
   const anthropicReader = upstream.body.getReader();
   try {
-    while (true) {
-      const { done, value } = await anthropicReader.read();
-      if (done) break;
-      res.write(value);
-    }
-    logAnthropicReq("ok");
-    res.end();
+    while (true) { const { done, value } = await anthropicReader.read(); if (done) break; res.write(value); }
+    logAnthropicReq("ok"); res.end();
   } catch (err) {
-    logAnthropicReq("error");
-    req.log.error({ err }, "Error streaming /v1/messages response");
+    logAnthropicReq("error"); req.log.error({ err }, "Error streaming /v1/messages response");
     if (!res.headersSent) res.status(500).json({ type: "error", error: { type: "api_error", message: "Stream error" } });
-  } finally {
-    if (heartbeatV1Msg) clearInterval(heartbeatV1Msg);
-  }
+  } finally { if (heartbeatV1Msg) clearInterval(heartbeatV1Msg); }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // OPENAI RESPONSES API ENDPOINT  — POST /v1/responses
-// Codex CLI: OPENAI_BASE_URL=https://domain/api  OPENAI_API_KEY=sk-cc-*
-// Routes through RC /codex key pool; passes request body through unchanged.
+// Routes through Smart Routing; Codex CLI: OPENAI_BASE_URL=<host>/api
 // ════════════════════════════════════════════════════════════════════════════
 
 router.post("/v1/responses", async (req, res) => {
   const authHeader = req.headers["authorization"] as string | undefined;
   const bearerKey = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : undefined;
-
   if (!bearerKey?.startsWith("sk-cc-")) {
-    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } });
-    return;
+    res.status(401).json({ error: { message: "Bearer token required (sk-cc-...)", type: "invalid_request_error", code: "invalid_api_key" } }); return;
   }
   const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, bearerKey)).limit(1);
   if (!rows[0] || !rows[0].isActive) {
-    res.status(401).json({ error: { message: "Invalid or disabled API key", type: "invalid_request_error", code: "invalid_api_key" } });
-    return;
+    res.status(401).json({ error: { message: "Invalid or disabled API key", type: "invalid_request_error", code: "invalid_api_key" } }); return;
   }
-  const poolKey = await getNextRcKey();
-  if (!poolKey) {
-    res.status(503).json({ error: { message: "No RC keys in pool — add Right Code keys in the Console to enable this endpoint.", type: "server_error" } });
-    return;
-  }
-
-  const startTime = Date.now();
   const userKeyId = rows[0].id;
   const body = req.body as Record<string, unknown>;
-
+  const requestedModel = (body.model as string | undefined) ?? "codex";
+  const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  const routeResult = await resolveRoute(ruleName);
+  if (!routeResult.ok) {
+    const msg = routeResult.reason === "all_rate_limited" ? `All providers for "${ruleName}" are rate-limited.` : `No routing rule for "${requestedModel}". Create one in Smart Routing.`;
+    res.status(routeResult.reason === "all_rate_limited" ? 429 : 404).json({ error: { message: msg, type: "api_error" } }); return;
+  }
+  const { apiKey: rKey, apiBaseUrl: rUrl } = routeResult.route;
+  if (!rKey || !rUrl) { res.status(400).json({ error: { message: "No API key/URL configured in routing rule.", type: "api_error" } }); return; }
   const clientAbortRes = new AbortController();
   req.on("close", () => { if (!res.writableEnded) clientAbortRes.abort(); });
-
   let upstream: Response;
   try {
-    upstream = await fetch(`${RC_BASE}/codex/v1/responses`, {
+    const base = rUrl.replace(/\/$/, "");
+    upstream = await fetch(`${base}/v1/responses`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${poolKey.key}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${rKey}` },
       body: JSON.stringify(body),
       signal: clientAbortRes.signal,
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
-    res.status(502).json({ error: { message: String(err), type: "api_error" } });
-    return;
+    res.status(502).json({ error: { message: String(err), type: "api_error" } }); return;
   }
-
-  const logCodexReq = (status: "ok" | "error") => {
+  const startTime = Date.now();
+  const logReq = (status: "ok" | "error") => {
     const elapsedMs = Date.now() - startTime;
     Promise.all([
       db.insert(requestLogsTable).values({ id: randomUUID(), userKeyId, ccKeyId: null, model: String(body.model ?? "codex"), elapsedMs, status, errorMsg: null }),
       db.update(userKeysTable).set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() }).where(eq(userKeysTable.id, userKeyId)),
-      incrementRcKeyUsage(poolKey.id),
     ]).catch(() => {});
   };
-
-  if (!upstream.ok) {
-    const text = await upstream.text();
-    logCodexReq("error");
-    if (upstream.status === 401 || upstream.status === 403) markRcKeyInvalid(poolKey.id).catch(() => {});
-    if (upstream.status === 429) penalizeRcKey(poolKey.id);
-    res.status(upstream.status).set("Content-Type", "application/json").send(text);
-    return;
+  if (!upstream.ok || !upstream.body) {
+    const text = await upstream.text(); logReq("error");
+    res.status(upstream.status).set("Content-Type", "application/json").send(text); return;
   }
-
-  const ctCodex = upstream.headers.get("content-type") ?? "application/json";
-  res.setHeader("Content-Type", ctCodex);
-  let heartbeatCodex: ReturnType<typeof setInterval> | null = null;
-  if (ctCodex.includes("text/event-stream")) {
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
+  const ct = upstream.headers.get("content-type") ?? "application/json";
+  res.setHeader("Content-Type", ct);
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  if (ct.includes("text/event-stream")) {
+    res.setHeader("Cache-Control", "no-cache, no-transform"); res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
     res.flushHeaders();
-    // Heartbeat: SSE comment every 30 s — Codex CLI sessions can last minutes
-    heartbeatCodex = setInterval(() => { if (!res.writableEnded) res.write(":\n\n"); }, 30_000);
+    heartbeat = setInterval(() => { if (!res.writableEnded) res.write(":\n\n"); }, 30_000);
   }
-
-  if (!upstream.body) {
-    if (heartbeatCodex) clearInterval(heartbeatCodex);
-    logCodexReq("ok"); res.end(); return;
-  }
-  const codexReader = upstream.body.getReader();
+  const reader = upstream.body.getReader();
   try {
-    while (true) {
-      const { done, value } = await codexReader.read();
-      if (done) break;
-      res.write(value);
-    }
-    logCodexReq("ok");
-    res.end();
+    while (true) { const { done, value } = await reader.read(); if (done) break; res.write(value); }
+    logReq("ok"); res.end();
   } catch (err) {
-    logCodexReq("error");
-    req.log.error({ err }, "Error streaming /v1/responses response");
+    logReq("error"); req.log.error({ err }, "Error streaming /v1/responses");
     if (!res.headersSent) res.status(500).json({ error: { message: "Stream error", type: "api_error" } });
-  } finally {
-    if (heartbeatCodex) clearInterval(heartbeatCodex);
-  }
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-// CUSTOM PROVIDER STREAM  — POST /chat/custom-stream
-// Accepts: { baseUrl, apiKey, apiType, model, messages, system }
-// apiType: "auto" | "openai" | "codex" | "anthropic" | "gemini"
-// When "auto": tries openai → codex → anthropic until one succeeds (gemini requires explicit selection).
-// ════════════════════════════════════════════════════════════════════════════
-
-type CustomApiType = "openai" | "codex" | "anthropic" | "gemini";
-
-type CustomWireMessage = { role: string; content: string };
-
-function buildCustomUpstream(
-  base: string,
-  type: CustomApiType,
-  apiKey: string | undefined,
-  model: string,
-  messages: CustomWireMessage[],
-  systemMsg: string,
-): { url: string; headers: Record<string, string>; body: unknown } {
-  const auth: Record<string, string> = apiKey
-    ? { Authorization: `Bearer ${apiKey}` }
-    : {};
-
-  if (type === "openai") {
-    const allMsgs = systemMsg
-      ? [{ role: "system", content: systemMsg }, ...messages]
-      : messages;
-    return {
-      url: `${base}/v1/chat/completions`,
-      headers: { "Content-Type": "application/json", ...auth },
-      body: { model, messages: allMsgs, stream: true },
-    };
-  }
-
-  if (type === "codex") {
-    const inputMsgs = systemMsg
-      ? [{ role: "system", content: systemMsg }, ...messages]
-      : messages;
-    return {
-      url: `${base}/v1/responses`,
-      headers: { "Content-Type": "application/json", ...auth },
-      body: { model, input: inputMsgs, stream: true },
-    };
-  }
-
-  if (type === "anthropic") {
-    return {
-      url: `${base}/v1/messages`,
-      headers: {
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-        ...(apiKey ? { "x-api-key": apiKey } : {}),
-      },
-      body: {
-        model,
-        messages,
-        system: systemMsg || undefined,
-        max_tokens: 16384,
-        stream: true,
-      },
-    };
-  }
-
-  // gemini — native Gemini API format
-  // Supports both proxy (Bearer) and direct Google-compatible (?key=) auth
-  const geminiContents = messages.map(m => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
-  }));
-
-  // Build URL: include ?key= for direct providers (AiGoCode, Google-compatible)
-  // Also send Bearer header for proxy providers (right.codes/gemini, code.newcli.com/gemini)
-  const keyParam = apiKey ? `?key=${encodeURIComponent(apiKey)}&alt=sse` : "?alt=sse";
-  const geminiUrl = `${base}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent${keyParam}`;
-
-  return {
-    url: geminiUrl,
-    headers: {
-      "Content-Type": "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-    },
-    body: {
-      contents: geminiContents,
-      ...(systemMsg ? { systemInstruction: { parts: [{ text: systemMsg }] } } : {}),
-      generationConfig: { maxOutputTokens: 8192 },
-    },
-  };
-}
-
-function parseCustomChunk(
-  type: CustomApiType,
-  jsonStr: string,
-  lastEvent: string,
-): string | null {
-  try {
-    const chunk = JSON.parse(jsonStr) as Record<string, unknown>;
-
-    if (type === "openai") {
-      // Standard SSE delta
-      const choices = chunk.choices as Array<{ delta?: { content?: string } }> | undefined;
-      const text = choices?.[0]?.delta?.content;
-      if (text) return text;
-      // Responses API delta (event: response.output_text.delta)
-      if (lastEvent === "response.output_text.delta" || chunk.type === "response.output_text.delta") {
-        const delta = chunk.delta as string | undefined;
-        if (delta) return delta;
-      }
-      return null;
-    }
-
-    if (type === "codex") {
-      // Codex /v1/responses SSE events
-      if (lastEvent === "response.output_text.delta" || chunk.type === "response.output_text.delta") {
-        const delta = chunk.delta as string | undefined;
-        if (delta) return delta;
-      }
-      // Also handle openai-like delta in case the provider maps it
-      const choices = chunk.choices as Array<{ delta?: { content?: string } }> | undefined;
-      const content = choices?.[0]?.delta?.content;
-      if (content) return content;
-      return null;
-    }
-
-    if (type === "anthropic") {
-      if (lastEvent === "content_block_delta") {
-        const delta = chunk.delta as { type?: string; text?: string } | undefined;
-        if (delta?.type === "text_delta" && delta.text) return delta.text;
-      }
-      return null;
-    }
-
-    // gemini — candidates[0].content.parts[0].text
-    if (type === "gemini") {
-      type GeminiCandidate = { content?: { parts?: { text?: string }[] } };
-      const candidates = chunk.candidates as GeminiCandidate[] | undefined;
-      const text = candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) return text;
-      return null;
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-router.post("/chat/custom-stream", async (req, res) => {
-  const {
-    baseUrl,
-    apiKey,
-    apiType,
-    model,
-    messages,
-    system,
-  } = req.body as {
-    baseUrl?: string;
-    apiKey?: string;
-    apiType?: "auto" | CustomApiType;
-    model?: string;
-    messages?: CustomWireMessage[];
-    system?: string;
-  };
-
-  if (!baseUrl || !model) {
-    res.status(400).json({ error: "baseUrl and model are required" });
-    return;
-  }
-  if (!messages || !Array.isArray(messages)) {
-    res.status(400).json({ error: "messages array is required" });
-    return;
-  }
-
-  const base = baseUrl.replace(/\/$/, "");
-  const systemMsg = system || "You are a helpful AI assistant.";
-
-  const typesToTry: CustomApiType[] =
-    !apiType || apiType === "auto"
-      ? ["openai", "codex", "anthropic"]
-      : [apiType];
-
-  const flush = () => (res as unknown as { flush?: () => void }).flush?.();
-  const sendText = (text: string) => {
-    res.write(`data: ${JSON.stringify({ type: "text-delta", id: "0", text })}\n\n`);
-    flush();
-  };
-
-  const clientAbortCustom = new AbortController();
-  req.on("close", () => { if (!res.writableEnded) clientAbortCustom.abort(); });
-
-  let lastError = "";
-
-  for (const type of typesToTry) {
-    const { url, headers, body } = buildCustomUpstream(base, type, apiKey, model, messages, systemMsg);
-
-    try {
-      const upstream = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: clientAbortCustom.signal,
-      });
-
-      if (!upstream.ok) {
-        const text = await upstream.text().catch(() => `HTTP ${upstream.status}`);
-        lastError = text.slice(0, 300);
-        req.log.warn({ type, status: upstream.status, url }, "custom-stream attempt failed, trying next");
-        continue;
-      }
-
-      // ── Stream found — start SSE ─────────────────────────────────────────
-      req.log.info({ type, url }, "custom-stream connected");
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.setHeader("X-Custom-Api-Type", type);
-      (res.socket as import("node:net").Socket | null)?.setNoDelay?.(true);
-      res.flushHeaders();
-
-      if (!upstream.body) { res.write("data: [DONE]\n\n"); res.end(); return; }
-
-      const reader = upstream.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let lastEvent = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (line.startsWith("event:")) { lastEvent = line.slice(6).trim(); continue; }
-          if (!line.startsWith("data:")) { lastEvent = ""; continue; }
-          const jsonStr = line.slice(5).trim();
-          if (jsonStr === "[DONE]") { lastEvent = ""; continue; }
-
-          const text = parseCustomChunk(type, jsonStr, lastEvent);
-          if (text) sendText(text);
-          lastEvent = "";
-        }
-      }
-
-      res.write("data: [DONE]\n\n");
-      flush();
-      res.end();
-      return;
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") { if (!res.writableEnded) res.end(); return; }
-      lastError = String(err).slice(0, 200);
-      req.log.warn({ type, err }, "custom-stream attempt error, trying next");
-    }
-  }
-
-  // All types failed
-  req.log.error({ baseUrl, model, typesToTry, lastError }, "custom-stream: all types failed");
-  if (!res.headersSent) {
-    res.status(502).json({
-      error: `فشل الاتصال بـ ${base}. جُرِّبت الأنواع: ${typesToTry.join(", ")}. آخر خطأ: ${lastError}`,
-    });
-  }
+  } finally { if (heartbeat) clearInterval(heartbeat); }
 });
 
 export default router;

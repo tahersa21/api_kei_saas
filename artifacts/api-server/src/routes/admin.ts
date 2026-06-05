@@ -1,11 +1,9 @@
 import { Router } from "express";
 import { randomBytes } from "crypto";
-import { db, ccKeysTable, rcKeysTable, userKeysTable, requestLogsTable, providersTable, routingRulesTable } from "@workspace/db";
+import { db, userKeysTable, requestLogsTable, providersTable, routingRulesTable } from "@workspace/db";
 import type { RoutingProviderEntry } from "@workspace/db";
 import { eq, and, desc, sql, count, gte, inArray } from "drizzle-orm";
 import { signAdminToken, adminAuthMiddleware } from "../lib/admin-auth";
-import { testCcKey, invalidateCcKeyCache } from "../lib/key-pool";
-import { invalidateRcKeyCache } from "../lib/rc-pool";
 import { getAllRpmStats } from "../lib/rate-limiter";
 import { getSettings, updateSettings, setModelOverride, getUserCredit, adjustUserCredit, getUserTransactions } from "../lib/settings";
 import { getUserRpmUsage } from "../lib/user-rate-limiter";
@@ -56,113 +54,6 @@ router.post("/admin/login", async (req, res) => {
 });
 
 router.use("/admin", adminAuthMiddleware);
-
-// ── CC Keys ──────────────────────────────────────────────────────────────────
-
-router.get("/admin/cc-keys", async (_req, res) => {
-  const keys = await db.select().from(ccKeysTable).orderBy(desc(ccKeysTable.createdAt));
-  res.json({ keys: keys.map(mask) });
-});
-
-router.post("/admin/cc-keys", async (req, res) => {
-  const { label, key } = req.body as { label?: string; key?: string };
-  if (!key?.trim()) {
-    res.status(400).json({ error: "key is required" });
-    return;
-  }
-  const id = randomBytes(12).toString("hex");
-  const [created] = await db
-    .insert(ccKeysTable)
-    .values({ id, label: label?.trim() || "API Key", key: key.trim() })
-    .returning();
-  invalidateCcKeyCache();
-  res.json({ key: mask(created) });
-});
-
-router.patch("/admin/cc-keys/:id", async (req, res) => {
-  const { id } = req.params;
-  const { label, isActive, isValid } = req.body as {
-    label?: string;
-    isActive?: boolean;
-    isValid?: boolean;
-  };
-  const updates: Record<string, unknown> = {};
-  if (label !== undefined) updates.label = label;
-  if (isActive !== undefined) updates.isActive = isActive;
-  if (isValid !== undefined) updates.isValid = isValid;
-  await db.update(ccKeysTable).set(updates).where(eq(ccKeysTable.id, id));
-  invalidateCcKeyCache();
-  res.json({ ok: true });
-});
-
-router.delete("/admin/cc-keys/:id", async (req, res) => {
-  await db.delete(ccKeysTable).where(eq(ccKeysTable.id, req.params.id));
-  invalidateCcKeyCache();
-  res.json({ ok: true });
-});
-
-router.post("/admin/cc-keys/:id/test", async (req, res) => {
-  const rows = await db
-    .select()
-    .from(ccKeysTable)
-    .where(eq(ccKeysTable.id, req.params.id))
-    .limit(1);
-  if (!rows[0]) {
-    res.status(404).json({ error: "Key not found" });
-    return;
-  }
-  const result = await testCcKey(rows[0].key);
-  await db
-    .update(ccKeysTable)
-    .set({ isValid: result.ok, lastCheckedAt: new Date() })
-    .where(eq(ccKeysTable.id, req.params.id));
-  invalidateCcKeyCache();
-  res.json(result);
-});
-
-// ── RC Keys ───────────────────────────────────────────────────────────────────
-
-router.get("/admin/rc-keys", async (_req, res) => {
-  const keys = await db.select().from(rcKeysTable).orderBy(desc(rcKeysTable.createdAt));
-  res.json({ keys: keys.map(mask) });
-});
-
-router.post("/admin/rc-keys", async (req, res) => {
-  const { label, key } = req.body as { label?: string; key?: string };
-  if (!key?.trim()) {
-    res.status(400).json({ error: "key is required" });
-    return;
-  }
-  const id = randomBytes(12).toString("hex");
-  const [created] = await db
-    .insert(rcKeysTable)
-    .values({ id, label: label?.trim() || "RC Key", key: key.trim() })
-    .returning();
-  invalidateRcKeyCache();
-  res.json({ key: mask(created) });
-});
-
-router.patch("/admin/rc-keys/:id", async (req, res) => {
-  const { id } = req.params;
-  const { label, isActive, isValid } = req.body as {
-    label?: string;
-    isActive?: boolean;
-    isValid?: boolean;
-  };
-  const updates: Record<string, unknown> = {};
-  if (label !== undefined) updates.label = label;
-  if (isActive !== undefined) updates.isActive = isActive;
-  if (isValid !== undefined) updates.isValid = isValid;
-  await db.update(rcKeysTable).set(updates).where(eq(rcKeysTable.id, id));
-  invalidateRcKeyCache();
-  res.json({ ok: true });
-});
-
-router.delete("/admin/rc-keys/:id", async (req, res) => {
-  await db.delete(rcKeysTable).where(eq(rcKeysTable.id, req.params.id));
-  invalidateRcKeyCache();
-  res.json({ ok: true });
-});
 
 // ── Providers ─────────────────────────────────────────────────────────────────
 
@@ -361,12 +252,12 @@ router.get("/admin/users/:clerkId/usage", async (req, res) => {
       .orderBy(sql`date_trunc('day', ${requestLogsTable.createdAt})`),
   ]);
 
-  const seriesMap = new Map(dailyRows.map(r => [r.day, r]));
+  const seriesMap = new Map(dailyRows.map((r: { day: string; total: number; errors: number }) => [r.day, r] as const));
   const daily: { date: string; requests: number; errors: number }[] = [];
   for (let i = 13; i >= 0; i--) {
     const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
     const k = d.toISOString().split("T")[0]!;
-    const row = seriesMap.get(k);
+    const row = seriesMap.get(k) as { day: string; total: number; errors: number } | undefined;
     daily.push({ date: k, requests: row ? Number(row.total) : 0, errors: row ? Number(row.errors) : 0 });
   }
 
@@ -415,18 +306,12 @@ router.get("/admin/stats", async (_req, res) => {
   const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
 
   const [
-    [totalCcKeys], [activeCcKeys],
-    [totalRcKeys], [activeRcKeys],
     [totalUserKeys], [activeUserKeys],
     [totalRequests], [todayRequests], [week7Requests], [yesterdayRequests],
     [successCount], [avgResp],
     topModels, topUserKeys,
     rawTimeSeries,
   ] = await Promise.all([
-    db.select({ c: count() }).from(ccKeysTable),
-    db.select({ c: count() }).from(ccKeysTable).where(and(eq(ccKeysTable.isActive, true), eq(ccKeysTable.isValid, true))),
-    db.select({ c: count() }).from(rcKeysTable),
-    db.select({ c: count() }).from(rcKeysTable).where(and(eq(rcKeysTable.isActive, true), eq(rcKeysTable.isValid, true))),
     db.select({ c: count() }).from(userKeysTable),
     db.select({ c: count() }).from(userKeysTable).where(eq(userKeysTable.isActive, true)),
     db.select({ c: count() }).from(requestLogsTable),
@@ -446,12 +331,13 @@ router.get("/admin/stats", async (_req, res) => {
   ]);
 
   // Fill in missing days in the 14-day time series
-  const seriesMap = new Map(rawTimeSeries.map((r) => [r.day, r]));
+  type TsRow = { day: string; total: number; errors: number; avgMs: number };
+  const seriesMap = new Map(rawTimeSeries.map((r: TsRow) => [r.day, r] as const));
   const timeSeries: { date: string; requests: number; errors: number; avgMs: number | null }[] = [];
   for (let i = 13; i >= 0; i--) {
     const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
     const key = d.toISOString().split("T")[0];
-    const row = seriesMap.get(key);
+    const row = seriesMap.get(key) as TsRow | undefined;
     timeSeries.push({
       date: key,
       requests: row ? Number(row.total) : 0,
@@ -464,8 +350,6 @@ router.get("/admin/stats", async (_req, res) => {
   const ok = Number(successCount.c);
 
   res.json({
-    ccKeys: { total: Number(totalCcKeys.c), active: Number(activeCcKeys.c) },
-    rcKeys: { total: Number(totalRcKeys.c), active: Number(activeRcKeys.c) },
     userKeys: { total: Number(totalUserKeys.c), active: Number(activeUserKeys.c) },
     requests: {
       total,
@@ -497,11 +381,9 @@ router.get("/admin/logs", async (req, res) => {
         errorMsg: requestLogsTable.errorMsg,
         createdAt: requestLogsTable.createdAt,
         userKeyLabel: userKeysTable.label,
-        ccKeyLabel: ccKeysTable.label,
       })
       .from(requestLogsTable)
       .leftJoin(userKeysTable, eq(requestLogsTable.userKeyId, userKeysTable.id))
-      .leftJoin(ccKeysTable, eq(requestLogsTable.ccKeyId, ccKeysTable.id))
       .orderBy(desc(requestLogsTable.createdAt))
       .limit(limit)
       .offset(offset),

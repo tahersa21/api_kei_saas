@@ -9,8 +9,6 @@ import {
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard, exact: true },
   { href: "/dashboard/users", label: "Users", icon: UserCircle },
-  { href: "/dashboard/cc-keys", label: "CC Keys", icon: Key },
-  { href: "/dashboard/rc-keys", label: "RC Keys", icon: Server },
   { href: "/dashboard/user-keys", label: "User Keys", icon: Users },
   { href: "/dashboard/providers", label: "Providers", icon: Globe },
   { href: "/dashboard/models", label: "Models", icon: Cpu },

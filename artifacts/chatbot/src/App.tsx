@@ -16,8 +16,6 @@ import UserDashboard from "@/pages/user-dashboard";
 import DashboardLogin from "@/pages/dashboard/login";
 import DashboardLayout from "@/pages/dashboard/layout";
 import DashboardOverview from "@/pages/dashboard/overview";
-import CcKeysPage from "@/pages/dashboard/cc-keys";
-import RcKeysPage from "@/pages/dashboard/rc-keys";
 import UserKeysPage from "@/pages/dashboard/user-keys";
 import ProvidersPage from "@/pages/dashboard/providers";
 import LogsPage from "@/pages/dashboard/logs";
@@ -185,20 +183,6 @@ function Router() {
         {() => (
           <DashboardGuard>
             <DashboardLayout><DashboardOverview /></DashboardLayout>
-          </DashboardGuard>
-        )}
-      </Route>
-      <Route path="/dashboard/cc-keys">
-        {() => (
-          <DashboardGuard>
-            <DashboardLayout><CcKeysPage /></DashboardLayout>
-          </DashboardGuard>
-        )}
-      </Route>
-      <Route path="/dashboard/rc-keys">
-        {() => (
-          <DashboardGuard>
-            <DashboardLayout><RcKeysPage /></DashboardLayout>
           </DashboardGuard>
         )}
       </Route>

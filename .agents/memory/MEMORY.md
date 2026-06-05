@@ -1,4 +1,3 @@
-- [CommandCode project structure](commandcode-project.md) — Full chatbot + API console; chatbot at `/`, API at `/api`, DB required for cc_keys/rc_keys/user_keys tables.
-- [Right Code provider integration](rightcode-integration.md) — right.codes as 2nd provider; rc: prefix for model IDs; backend normalizes all SSE formats to text-delta.
-- [Right Code API Structure](rightcode-api.md) — right.codes has no /v1/models; use /models/public (public, no auth); model IDs encode channel prefix as `rc:{prefix}|{modelName}`
+- [CommandCode project structure](commandcode-project.md) — Full chatbot + API console; chatbot at `/`, API at `/api`, DB required for user_keys/request_logs/providers/routing_rules tables.
+- [Smart Routing only](smart-routing-only.md) — CC Keys and RC Keys completely removed; ALL requests route through Smart Routing engine; no more key pools.
 - [Console page architecture](console-architecture.md) — `/` is now the API Console (not the chatbot); chatbot moved to `/chat`; sendMessage takes 5 positional args not an object
