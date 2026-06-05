@@ -348,9 +348,11 @@ async function handleCodexResponses(req: import("express").Request, res: import(
 
   const logRequest = (status: "ok" | "error", tokensIn = 0, tokensOut = 0, errorMsg?: string) => {
     const elapsedMs = Date.now() - startTime;
-    // Pricing: routing rule takes priority, falls back to modelOverrides (set via admin Models page)
+    // Pricing: routing rule takes priority, falls back to modelOverrides.
+    // Try both exact requestedModel key AND "route:<model>" form since admin may store either way.
     const { priceInputPer1M: ruleIn, priceOutputPer1M: ruleOut } = routeResult.route;
-    const overridePrice = getSettings().modelOverrides[requestedModel]?.price;
+    const overrides = getSettings().modelOverrides;
+    const overridePrice = (overrides[requestedModel] ?? overrides[`route:${requestedModel}`])?.price;
     const priceIn = ruleIn ?? overridePrice?.input ?? null;
     const priceOut = ruleOut ?? overridePrice?.output ?? null;
     let costCredits: number | null = null;
