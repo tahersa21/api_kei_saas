@@ -21,7 +21,7 @@ type Stats = {
   recentLogs: { model: string; status: string; elapsedMs: number | null; createdAt: string }[];
 };
 type UserKey = {
-  id: string; label: string; key: string; isActive: boolean;
+  id: string; label: string; key: string; maskedKey?: string; isActive: boolean;
   usageCount: number; lastUsedAt: string | null; createdAt: string;
 };
 type Log = { id: string; model: string; status: string; elapsedMs: number | null; tokensIn: number | null; tokensOut: number | null; costCredits: number | null; createdAt: string };
@@ -540,7 +540,7 @@ function ApiKeysPage({ keys, loadingKeys, onRefresh }: { keys: UserKey[]; loadin
                   <td className="px-4 py-3 text-white/80 font-medium">{k.label}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1 font-mono text-white/50">
-                      <span>{k.key}</span>
+                      <span>{k.maskedKey ?? k.key}</span>
                       <CopyBtn text={k.key} />
                     </div>
                   </td>

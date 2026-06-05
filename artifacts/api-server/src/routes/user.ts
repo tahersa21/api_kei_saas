@@ -37,7 +37,7 @@ router.get("/user/keys", async (req, res) => {
     .from(userKeysTable)
     .where(eq(userKeysTable.clerkUserId, userId))
     .orderBy(desc(userKeysTable.createdAt));
-  res.json({ keys: keys.map(k => ({ ...k, key: maskKey(k.key) })) });
+  res.json({ keys: keys.map(k => ({ ...k, maskedKey: maskKey(k.key) })) });
 });
 
 // ── POST /api/user/keys ───────────────────────────────────────────────────────
