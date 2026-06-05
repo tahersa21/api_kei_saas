@@ -595,9 +595,9 @@ router.post("/proxy/codex/v1/chat/completions", async (req, res) => {
 
 // ── PROXY: OpenAI Responses API — for Codex CLI (wire_api = "responses") ──────
 // Codex CLI config.toml: base_url = "<host>/api/proxy/codex", wire_api = "responses"
-// Codex CLI sends: POST <base_url>/v1/responses
+// Codex CLI sends: POST <base_url>/responses  (some versions also use /v1/responses)
 
-router.post("/proxy/codex/v1/responses", async (req, res) => {
+async function handleCodexResponses(req: import("express").Request, res: import("express").Response) {
   const authHeader = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
   const xApiKey = req.headers["x-api-key"] as string | undefined;
   const incomingKey = authHeader || xApiKey;
@@ -664,7 +664,11 @@ router.post("/proxy/codex/v1/responses", async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } });
     else res.end();
   }
-});
+}
+
+// Register both paths — Codex CLI omits /v1/ in some versions
+router.post("/proxy/codex/responses", handleCodexResponses);
+router.post("/proxy/codex/v1/responses", handleCodexResponses);
 
 router.post("/chat/stream", async (req, res) => {
   const headerKey = req.headers["x-api-key"] as string | undefined;
