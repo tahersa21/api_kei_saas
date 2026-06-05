@@ -376,6 +376,12 @@ router.post("/chat/stream", async (req, res) => {
       const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, headerKey)).limit(1);
       if (!rows[0]) { res.status(403).json({ error: "Invalid API key" }); return; }
       if (!rows[0].isActive) { res.status(403).json({ error: "API key is disabled" }); return; }
+      const { checkUserRpm } = await import("../lib/user-rate-limiter.js");
+      if (!checkUserRpm(rows[0].id, rows[0].rpmLimit)) {
+        res.setHeader("Retry-After", "60");
+        res.status(429).json({ error: `Rate limit exceeded — max ${rows[0].rpmLimit} requests/minute for this key` });
+        return;
+      }
       userKeyId = rows[0].id;
       const poolKey = await getNextCcKey();
       if (!poolKey) { res.status(503).json({ error: "No active CommandCode API keys in pool" }); return; }

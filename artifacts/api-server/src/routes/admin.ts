@@ -2,11 +2,13 @@ import { Router } from "express";
 import { randomBytes } from "crypto";
 import { db, ccKeysTable, rcKeysTable, userKeysTable, requestLogsTable, providersTable, routingRulesTable } from "@workspace/db";
 import type { RoutingProviderEntry } from "@workspace/db";
-import { eq, and, desc, sql, count, gte } from "drizzle-orm";
+import { eq, and, desc, sql, count, gte, inArray } from "drizzle-orm";
 import { signAdminToken, adminAuthMiddleware } from "../lib/admin-auth";
 import { testCcKey, invalidateCcKeyCache } from "../lib/key-pool";
 import { invalidateRcKeyCache } from "../lib/rc-pool";
 import { getAllRpmStats } from "../lib/rate-limiter";
+import { getSettings, updateSettings } from "../lib/settings";
+import { getUserRpmUsage } from "../lib/user-rate-limiter";
 
 const router = Router();
 
@@ -249,10 +251,11 @@ router.post("/admin/user-keys", async (req, res) => {
 });
 
 router.patch("/admin/user-keys/:id", async (req, res) => {
-  const { label, isActive } = req.body as { label?: string; isActive?: boolean };
+  const { label, isActive, rpmLimit } = req.body as { label?: string; isActive?: boolean; rpmLimit?: number };
   const updates: Record<string, unknown> = {};
   if (label !== undefined) updates.label = label;
   if (isActive !== undefined) updates.isActive = isActive;
+  if (rpmLimit !== undefined) updates.rpmLimit = Math.max(1, Math.min(10000, Number(rpmLimit)));
   await db.update(userKeysTable).set(updates).where(eq(userKeysTable.id, req.params.id));
   res.json({ ok: true });
 });
@@ -260,6 +263,81 @@ router.patch("/admin/user-keys/:id", async (req, res) => {
 router.delete("/admin/user-keys/:id", async (req, res) => {
   await db.delete(userKeysTable).where(eq(userKeysTable.id, req.params.id));
   res.json({ ok: true });
+});
+
+// ── Users (Clerk) ─────────────────────────────────────────────────────────────
+
+router.get("/admin/users", async (_req, res) => {
+  const secretKey = process.env.CLERK_SECRET_KEY;
+  if (!secretKey) { res.status(500).json({ error: "CLERK_SECRET_KEY not set" }); return; }
+
+  try {
+    const r = await fetch("https://api.clerk.com/v1/users?limit=100&order_by=-created_at", {
+      headers: { Authorization: `Bearer ${secretKey}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) { res.status(502).json({ error: "Clerk API error" }); return; }
+    const data = await r.json() as { id: string; email_addresses: { email_address: string }[]; first_name: string | null; last_name: string | null; image_url: string; created_at: number; last_sign_in_at: number | null }[];
+
+    const clerkIds = data.map(u => u.id);
+    const userKeys = clerkIds.length > 0
+      ? await db.select({
+          clerkUserId: userKeysTable.clerkUserId,
+          usageCount: userKeysTable.usageCount,
+          isActive: userKeysTable.isActive,
+          id: userKeysTable.id,
+          rpmLimit: userKeysTable.rpmLimit,
+        }).from(userKeysTable).where(inArray(userKeysTable.clerkUserId, clerkIds))
+      : [];
+
+    const keysByUser = new Map<string, typeof userKeys>();
+    for (const k of userKeys) {
+      if (!k.clerkUserId) continue;
+      if (!keysByUser.has(k.clerkUserId)) keysByUser.set(k.clerkUserId, []);
+      keysByUser.get(k.clerkUserId)!.push(k);
+    }
+
+    const users = data.map(u => ({
+      id: u.id,
+      email: u.email_addresses[0]?.email_address ?? "",
+      name: [u.first_name, u.last_name].filter(Boolean).join(" ") || null,
+      imageUrl: u.image_url,
+      createdAt: u.created_at,
+      lastSignInAt: u.last_sign_in_at,
+      keys: keysByUser.get(u.id) ?? [],
+      totalUsage: (keysByUser.get(u.id) ?? []).reduce((s, k) => s + k.usageCount, 0),
+    }));
+
+    res.json({ users });
+  } catch {
+    res.status(502).json({ error: "Failed to fetch users" });
+  }
+});
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+router.get("/admin/settings", (_req, res) => {
+  res.json(getSettings());
+});
+
+router.patch("/admin/settings", (req, res) => {
+  const { defaultRpmLimit, maxKeysPerUser, registrationsEnabled, siteName, maintenanceMode } =
+    req.body as { defaultRpmLimit?: number; maxKeysPerUser?: number; registrationsEnabled?: boolean; siteName?: string; maintenanceMode?: boolean };
+  const patch: Parameters<typeof updateSettings>[0] = {};
+  if (defaultRpmLimit !== undefined) patch.defaultRpmLimit = Math.max(1, Math.min(10000, Number(defaultRpmLimit)));
+  if (maxKeysPerUser !== undefined) patch.maxKeysPerUser = Math.max(1, Math.min(50, Number(maxKeysPerUser)));
+  if (registrationsEnabled !== undefined) patch.registrationsEnabled = Boolean(registrationsEnabled);
+  if (siteName !== undefined) patch.siteName = String(siteName).slice(0, 64);
+  if (maintenanceMode !== undefined) patch.maintenanceMode = Boolean(maintenanceMode);
+  const updated = updateSettings(patch);
+  res.json(updated);
+});
+
+// ── User RPM stats ─────────────────────────────────────────────────────────────
+router.get("/admin/user-rpm", async (_req, res) => {
+  const keys = await db.select({ id: userKeysTable.id, label: userKeysTable.label, rpmLimit: userKeysTable.rpmLimit, clerkUserId: userKeysTable.clerkUserId }).from(userKeysTable).where(eq(userKeysTable.isActive, true));
+  const stats = keys.map(k => ({ id: k.id, label: k.label, rpmLimit: k.rpmLimit, currentRpm: getUserRpmUsage(k.id), clerkUserId: k.clerkUserId }));
+  res.json({ stats });
 });
 
 // ── Stats ─────────────────────────────────────────────────────────────────────

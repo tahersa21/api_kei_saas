@@ -3,16 +3,18 @@ import { Link, useLocation } from "wouter";
 import { useAdminAuth } from "@/context/admin-auth";
 import {
   Terminal, LayoutDashboard, Key, Users, ScrollText, LogOut, ChevronRight,
-  Server, Globe,
+  Server, Globe, UserCircle, Settings,
 } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard, exact: true },
+  { href: "/dashboard/users", label: "Users", icon: UserCircle },
   { href: "/dashboard/cc-keys", label: "CC Keys", icon: Key },
   { href: "/dashboard/rc-keys", label: "RC Keys", icon: Server },
   { href: "/dashboard/user-keys", label: "User Keys", icon: Users },
   { href: "/dashboard/providers", label: "Providers", icon: Globe },
   { href: "/dashboard/logs", label: "Logs", icon: ScrollText },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
@@ -28,7 +30,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <span className="font-bold tracking-tight text-sm">CommandCode</span>
         </div>
 
-        <nav className="flex-1 px-2 py-3 space-y-0.5">
+        <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
           {NAV.map(({ href, label, icon: Icon, exact }) => {
             const active = exact ? location === href : location.startsWith(href);
             return (

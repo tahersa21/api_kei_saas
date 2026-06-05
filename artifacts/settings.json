@@ -1,0 +1,7 @@
+{
+  "defaultRpmLimit": 60,
+  "maxKeysPerUser": 5,
+  "registrationsEnabled": true,
+  "siteName": "CommandCode",
+  "maintenanceMode": false
+}

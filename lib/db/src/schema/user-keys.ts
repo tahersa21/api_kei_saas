@@ -8,6 +8,7 @@ export const userKeysTable = pgTable("user_keys", {
   label: text("label").notNull(),
   key: text("key").notNull().unique(),
   isActive: boolean("is_active").notNull().default(true),
+  rpmLimit: integer("rpm_limit").notNull().default(60),
   usageCount: integer("usage_count").notNull().default(0),
   lastUsedAt: timestamp("last_used_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

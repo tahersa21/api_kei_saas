@@ -21,6 +21,8 @@ import RcKeysPage from "@/pages/dashboard/rc-keys";
 import UserKeysPage from "@/pages/dashboard/user-keys";
 import ProvidersPage from "@/pages/dashboard/providers";
 import LogsPage from "@/pages/dashboard/logs";
+import UsersPage from "@/pages/dashboard/users";
+import SettingsPage from "@/pages/dashboard/settings";
 import { useAdminAuth } from "@/context/admin-auth";
 
 const queryClient = new QueryClient();
@@ -215,6 +217,20 @@ function Router() {
         {() => (
           <DashboardGuard>
             <DashboardLayout><LogsPage /></DashboardLayout>
+          </DashboardGuard>
+        )}
+      </Route>
+      <Route path="/dashboard/users">
+        {() => (
+          <DashboardGuard>
+            <DashboardLayout><UsersPage /></DashboardLayout>
+          </DashboardGuard>
+        )}
+      </Route>
+      <Route path="/dashboard/settings">
+        {() => (
+          <DashboardGuard>
+            <DashboardLayout><SettingsPage /></DashboardLayout>
           </DashboardGuard>
         )}
       </Route>

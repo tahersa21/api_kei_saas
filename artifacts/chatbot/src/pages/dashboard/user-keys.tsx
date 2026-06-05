@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Plus, Trash2, Copy, CheckCircle2, Loader2,
-  ToggleLeft, ToggleRight, RefreshCw,
+  ToggleLeft, ToggleRight, RefreshCw, Gauge,
 } from "lucide-react";
 
 type UserKey = {
@@ -12,6 +12,7 @@ type UserKey = {
   label: string;
   key: string;
   isActive: boolean;
+  rpmLimit: number;
   usageCount: number;
   lastUsedAt: string | null;
   createdAt: string;
@@ -23,10 +24,13 @@ export default function UserKeysPage() {
   const [keys, setKeys] = useState<UserKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [newLabel, setNewLabel] = useState("");
+  const [newRpm, setNewRpm] = useState(60);
   const [creating, setCreating] = useState(false);
   const [newKeyResult, setNewKeyResult] = useState<UserKey | null>(null);
   const [copied, setCopied] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [editingRpm, setEditingRpm] = useState<Record<string, number>>({});
+  const [savingRpm, setSavingRpm] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     const res = await apiFetch("/api/admin/user-keys");
@@ -41,11 +45,12 @@ export default function UserKeysPage() {
     setCreating(true);
     const res = await apiFetch("/api/admin/user-keys", {
       method: "POST",
-      body: JSON.stringify({ label: newLabel }),
+      body: JSON.stringify({ label: newLabel, rpmLimit: newRpm }),
     });
     const data = (await res.json()) as { key: UserKey };
     setNewKeyResult(data.key);
     setNewLabel("");
+    setNewRpm(60);
     setShowForm(false);
     await load();
     setCreating(false);
@@ -64,6 +69,19 @@ export default function UserKeysPage() {
     setKeys((prev) => prev.map((k) => k.id === id ? { ...k, isActive: !current } : k));
   };
 
+  const saveRpm = async (id: string) => {
+    const rpm = editingRpm[id];
+    if (rpm === undefined) return;
+    setSavingRpm(prev => ({ ...prev, [id]: true }));
+    await apiFetch(`/api/admin/user-keys/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ rpmLimit: rpm }),
+    });
+    setKeys(prev => prev.map(k => k.id === id ? { ...k, rpmLimit: rpm } : k));
+    setEditingRpm(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setSavingRpm(prev => { const n = { ...prev }; delete n[id]; return n; });
+  };
+
   const copyKey = (key: string) => {
     navigator.clipboard.writeText(key);
     setCopied(true);
@@ -75,7 +93,7 @@ export default function UserKeysPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-sm font-bold tracking-tight">User API Keys</h1>
-          <p className="text-[10px] text-muted-foreground font-sans mt-0.5">Keys you issue to your users — each routes through the CC key pool</p>
+          <p className="text-[10px] text-muted-foreground font-sans mt-0.5">Keys issued to users — each routes through the CC key pool</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={load}>
@@ -93,6 +111,15 @@ export default function UserKeysPage() {
           <Input value={newLabel} onChange={(e) => setNewLabel(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") createKey(); }}
             className="h-8 text-xs font-sans bg-background/50" placeholder="Label (e.g. customer name or project)" />
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-muted-foreground font-sans whitespace-nowrap flex items-center gap-1">
+              <Gauge className="w-3 h-3" />RPM limit
+            </label>
+            <Input type="number" min={1} max={10000} value={newRpm}
+              onChange={e => setNewRpm(Number(e.target.value))}
+              className="h-8 w-24 text-xs font-sans bg-background/50 text-center" />
+            <span className="text-[10px] text-muted-foreground">req/min</span>
+          </div>
           <div className="flex justify-end gap-2">
             <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowForm(false)}>Cancel</Button>
             <Button size="sm" className="h-7 px-3 text-xs" onClick={createKey} disabled={creating}>
@@ -134,37 +161,61 @@ export default function UserKeysPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {keys.map((k) => (
-            <div key={k.id} className={`border rounded-lg p-3 flex items-center gap-3 transition-colors
-              ${k.isActive ? "border-border/50 bg-card/30" : "border-border/30 bg-card/10 opacity-60"}`}>
-              <div className="flex-1 min-w-0 space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium">{k.label}</span>
-                  {!k.isActive && <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-muted/40 text-muted-foreground">disabled</span>}
-                  {k.clerkUserId && <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">self-created</span>}
-                </div>
-                <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-sans">
-                  <span className="font-mono">{k.key}</span>
-                  <span>•</span>
-                  <span>{k.usageCount.toLocaleString()} requests</span>
-                  {k.lastUsedAt && <><span>•</span><span>last used {new Date(k.lastUsedAt).toLocaleDateString()}</span></>}
-                  <span>•</span>
-                  <span>created {new Date(k.createdAt).toLocaleDateString()}</span>
+          {keys.map((k) => {
+            const rpmVal = editingRpm[k.id] ?? k.rpmLimit;
+            const rpmChanged = editingRpm[k.id] !== undefined && editingRpm[k.id] !== k.rpmLimit;
+            return (
+              <div key={k.id} className={`border rounded-lg p-3 transition-colors
+                ${k.isActive ? "border-border/50 bg-card/30" : "border-border/30 bg-card/10 opacity-60"}`}>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium">{k.label}</span>
+                      {!k.isActive && <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-muted/40 text-muted-foreground">disabled</span>}
+                      {k.clerkUserId && <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">self-created</span>}
+                    </div>
+                    <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-sans flex-wrap">
+                      <span className="font-mono">{k.key}</span>
+                      <span>•</span>
+                      <span>{k.usageCount.toLocaleString()} requests</span>
+                      {k.lastUsedAt && <><span>•</span><span>last used {new Date(k.lastUsedAt).toLocaleDateString()}</span></>}
+                      <span>•</span>
+                      <span>created {new Date(k.createdAt).toLocaleDateString()}</span>
+                    </div>
+                    {/* RPM editor */}
+                    <div className="flex items-center gap-2 pt-0.5">
+                      <Gauge className="w-3 h-3 text-muted-foreground/50 flex-none" />
+                      <Input
+                        type="number"
+                        min={1}
+                        max={10000}
+                        value={rpmVal}
+                        onChange={e => setEditingRpm(prev => ({ ...prev, [k.id]: Number(e.target.value) }))}
+                        className="h-6 w-20 text-[10px] font-sans bg-background/50 text-center px-1"
+                      />
+                      <span className="text-[10px] text-muted-foreground">req/min</span>
+                      {rpmChanged && (
+                        <Button size="sm" className="h-6 px-2 text-[10px]" onClick={() => saveRpm(k.id)} disabled={savingRpm[k.id]}>
+                          {savingRpm[k.id] ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Save"}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-none">
+                    <button onClick={() => toggleActive(k.id, k.isActive)}
+                      title={k.isActive ? "Disable" : "Enable"}
+                      className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors">
+                      {k.isActive ? <ToggleRight className="w-3.5 h-3.5 text-emerald-500" /> : <ToggleLeft className="w-3.5 h-3.5" />}
+                    </button>
+                    <button onClick={() => deleteKey(k.id)}
+                      className="p-1.5 rounded text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 flex-none">
-                <button onClick={() => toggleActive(k.id, k.isActive)}
-                  title={k.isActive ? "Disable" : "Enable"}
-                  className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors">
-                  {k.isActive ? <ToggleRight className="w-3.5 h-3.5 text-emerald-500" /> : <ToggleLeft className="w-3.5 h-3.5" />}
-                </button>
-                <button onClick={() => deleteKey(k.id)}
-                  className="p-1.5 rounded text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
