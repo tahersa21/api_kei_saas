@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import RoutingPage from "@/pages/dashboard/routing";
 import { useGetChatModels, useGetChatRcModels, useGetChatAgModels } from "@workspace/api-client-react";
 import { useAdminAuth, useAdminFetch } from "@/context/admin-auth";
 import { useChatStream } from "@/hooks/use-chat-stream";
@@ -761,6 +762,12 @@ function ApiKeysPanel({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+
+// ─── Routing Panel ────────────────────────────────────────────────────────────
+
+function RoutingPanel(_props: { isAdmin: boolean; customProviders: CustomProvider[] }) {
+  return <RoutingPage />;
+}
 
 // ─── Custom Provider Key Panel ────────────────────────────────────────────────
 
