@@ -3,6 +3,7 @@ import { randomBytes } from "crypto";
 import { getAuth } from "@clerk/express";
 import { db, userKeysTable, requestLogsTable } from "@workspace/db";
 import { eq, desc, count, sql, and, gte, lte, like, inArray } from "drizzle-orm";
+import { getUserCredit, getUserTransactions } from "../lib/settings";
 
 const router = Router();
 
@@ -165,6 +166,16 @@ router.get("/user/logs", async (req, res) => {
   ]);
 
   res.json({ total: Number(totalRes[0]?.c ?? 0), page, pageSize, logs: rows });
+});
+
+// ── GET /api/user/credits ─────────────────────────────────────────────────────
+router.get("/user/credits", (req, res) => {
+  const userId = requireClerkUser(req, res);
+  if (!userId) return;
+  res.json({
+    balance: getUserCredit(userId),
+    transactions: getUserTransactions(userId).slice(0, 10),
+  });
 });
 
 export default router;

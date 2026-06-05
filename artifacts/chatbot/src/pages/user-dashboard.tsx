@@ -4,7 +4,7 @@ import {
   Home, LayoutDashboard, FileText, Key, Cpu, CreditCard, MessageSquare,
   Users, Phone, ChevronLeft, ChevronRight, RefreshCw, Copy, Check,
   Search, ExternalLink, Bell, Globe, Shield, Plus, Trash2, ToggleLeft, ToggleRight, Eye, EyeOff,
-  BookOpen, ChevronDown,
+  BookOpen, ChevronDown, Coins,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -121,7 +121,7 @@ function NewKeyModal({ fullKey, onClose }: { fullKey: string; onClose: () => voi
 }
 
 // ── HOME PAGE ─────────────────────────────────────────────────────────────────
-function HomePage({ stats, keyCount, loading, range, onRange }: { stats: Stats | null; keyCount: number; loading: boolean; range: Range; onRange: (r: Range) => void }) {
+function HomePage({ stats, keyCount, creditBalance, loading, range, onRange }: { stats: Stats | null; keyCount: number; creditBalance: number; loading: boolean; range: Range; onRange: (r: Range) => void }) {
   const val = (n: number) => loading ? "…" : String(n);
   return (
     <div className="space-y-6">
@@ -137,7 +137,7 @@ function HomePage({ stats, keyCount, loading, range, onRange }: { stats: Stats |
         <StatCard dot="bg-yellow-400" label="Today's Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-yellow-400/50" />} />
         <StatCard dot="bg-red-400" label="Total Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-red-400/50" />} />
         <StatCard dot="bg-cyan-400" label="My API Keys" value={keyCount} icon={<Key className="w-4 h-4 text-cyan-400/50" />} />
-        <StatCard dot="bg-pink-400" label="Total Invites" value="0" icon={<Users className="w-4 h-4 text-pink-400/50" />} />
+        <StatCard dot="bg-emerald-400" label="Credit Balance" value={loading ? "…" : `${(creditBalance ?? 0).toLocaleString()} cr`} sub="1 cr = $0.01" icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
       </div>
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
@@ -164,7 +164,7 @@ function HomePage({ stats, keyCount, loading, range, onRange }: { stats: Stats |
 }
 
 // ── DASHBOARD PAGE ────────────────────────────────────────────────────────────
-function DashboardPage({ stats, loading, range, onRange }: { stats: Stats | null; loading: boolean; range: Range; onRange: (r: Range) => void }) {
+function DashboardPage({ stats, creditBalance, loading, range, onRange }: { stats: Stats | null; creditBalance: number; loading: boolean; range: Range; onRange: (r: Range) => void }) {
   const val = (n: number) => loading ? "…" : String(n);
   const COLORS = ["#f97316", "#8b5cf6", "#06b6d4", "#22c55e", "#ec4899", "#eab308"];
   return (
@@ -174,7 +174,7 @@ function DashboardPage({ stats, loading, range, onRange }: { stats: Stats | null
         <RangeTabs value={range} onChange={onRange} />
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard dot="bg-green-400" label="Balance" value="$0.00" />
+        <StatCard dot="bg-emerald-400" label="Credit Balance" value={loading ? "…" : `${(creditBalance ?? 0).toLocaleString()} cr`} sub="1 cr = $0.01" icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
         <StatCard dot="bg-orange-400" label="Total Cost" value="$0.00" />
         <StatCard dot="bg-blue-400" label="Total Tokens" value="0" />
         <StatCard dot="bg-red-400" label="Total Requests" value={val(stats?.rangeRequests ?? 0)} />
@@ -1115,6 +1115,7 @@ export default function UserDashboard() {
   const [range, setRange] = useState<Range>("today");
   const [keys, setKeys] = useState<UserKey[]>([]);
   const [keysLoading, setKeysLoading] = useState(true);
+  const [creditBalance, setCreditBalance] = useState(0);
 
   const loadKeys = useCallback(async () => {
     setKeysLoading(true);
@@ -1130,7 +1131,12 @@ export default function UserDashboard() {
     setStatsLoading(false);
   }, []);
 
-  useEffect(() => { loadKeys(); }, [loadKeys]);
+  const loadCredits = useCallback(async () => {
+    const data = await apiFetch<{ balance: number }>("/api/user/credits");
+    if (data) setCreditBalance(data.balance);
+  }, []);
+
+  useEffect(() => { loadKeys(); loadCredits(); }, [loadKeys, loadCredits]);
   useEffect(() => { loadStats(range); }, [range, loadStats]);
 
   const handleNav = (id: string) => {
@@ -1170,10 +1176,15 @@ export default function UserDashboard() {
         <header className="flex items-center justify-between px-6 py-3.5 border-b border-white/[0.07] shrink-0">
           <span className="text-sm text-white/40">{navLabel}</span>
           <div className="flex items-center gap-3">
-            <button onClick={() => { loadStats(range); loadKeys(); }} disabled={statsLoading}
+            <button onClick={() => { loadStats(range); loadKeys(); loadCredits(); }} disabled={statsLoading}
               className="p-1.5 rounded text-white/30 hover:text-white hover:bg-white/5 transition-colors">
               <RefreshCw className={`w-4 h-4 ${statsLoading ? "animate-spin" : ""}`} />
             </button>
+            {/* Credit balance badge */}
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+              <Coins className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-xs font-mono text-emerald-400">{creditBalance.toLocaleString()} cr</span>
+            </div>
             <div className="flex items-center gap-2 pl-3 border-l border-white/[0.07]">
               <span className="text-xs text-white/40 hidden sm:block">{user?.primaryEmailAddress?.emailAddress}</span>
               <UserButton />
@@ -1182,8 +1193,8 @@ export default function UserDashboard() {
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">
-          {nav === "home" && <HomePage stats={stats} keyCount={keys.length} loading={statsLoading} range={range} onRange={r => setRange(r)} />}
-          {nav === "dashboard" && <DashboardPage stats={stats} loading={statsLoading} range={range} onRange={r => setRange(r)} />}
+          {nav === "home" && <HomePage stats={stats} keyCount={keys.length} creditBalance={creditBalance} loading={statsLoading} range={range} onRange={r => setRange(r)} />}
+          {nav === "dashboard" && <DashboardPage stats={stats} creditBalance={creditBalance} loading={statsLoading} range={range} onRange={r => setRange(r)} />}
           {nav === "logs" && <UsageLogsPage />}
           {nav === "keys" && <ApiKeysPage keys={keys} loadingKeys={keysLoading} onRefresh={loadKeys} />}
           {nav === "models" && <ModelsPage />}

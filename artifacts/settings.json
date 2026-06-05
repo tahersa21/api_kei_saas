@@ -6,7 +6,7 @@
   "maintenanceMode": false,
   "modelOverrides": {},
   "userCredits": {
-    "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": 0
+    "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": 1200
   },
   "creditTransactions": {
     "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": [
@@ -21,6 +21,12 @@
         "delta": -500,
         "note": "Reset test",
         "createdAt": "2026-06-05T18:35:21.587Z"
+      },
+      {
+        "id": "1780684576509-fsxwn",
+        "delta": 1200,
+        "note": "Admin grant",
+        "createdAt": "2026-06-05T18:36:16.509Z"
       }
     ]
   }
