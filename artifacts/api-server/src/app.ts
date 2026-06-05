@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import pinoHttp from "pino-http";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -13,6 +14,13 @@ import { logger } from "./lib/logger";
 const app: Express = express();
 
 app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
+
+app.use(
+  helmet({
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: false,
+  }),
+);
 
 app.use(
   pinoHttp({
@@ -62,8 +70,6 @@ if (existsSync(publicDir)) {
 }
 
 // ── Global safety nets ────────────────────────────────────────────────────────
-// Catch promise rejections that escape route handlers (e.g. fire-and-forget ops).
-// Without this, an unhandled rejection in Node 15+ terminates the process.
 process.on("unhandledRejection", (reason) => {
   logger.error({ reason }, "Unhandled promise rejection — check for missing .catch()");
 });

@@ -10,7 +10,28 @@ import { getAllRpmStats } from "../lib/rate-limiter";
 
 const router = Router();
 
+// Brute-force protection: max 10 failed attempts per IP per 15 minutes
+const loginFailures = new Map<string, { count: number; resetAt: number }>();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+
+function getClientIp(req: import("express").Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  return (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0]) ?? req.socket.remoteAddress ?? "unknown";
+}
+
 router.post("/admin/login", async (req, res) => {
+  const ip = getClientIp(req);
+  const now = Date.now();
+
+  const entry = loginFailures.get(ip);
+  if (entry && now < entry.resetAt && entry.count >= LOGIN_MAX_ATTEMPTS) {
+    const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+    res.setHeader("Retry-After", String(retryAfter));
+    res.status(429).json({ error: "Too many failed attempts. Try again later." });
+    return;
+  }
+
   const { password } = req.body as { password?: string };
   const adminPassword = process.env.ADMIN_PASSWORD;
   if (!adminPassword) {
@@ -18,9 +39,17 @@ router.post("/admin/login", async (req, res) => {
     return;
   }
   if (!password || password !== adminPassword) {
+    const current = loginFailures.get(ip);
+    if (!current || now >= current.resetAt) {
+      loginFailures.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    } else {
+      current.count += 1;
+    }
     res.status(401).json({ error: "Invalid password" });
     return;
   }
+
+  loginFailures.delete(ip);
   res.json({ token: signAdminToken() });
 });
 
