@@ -726,6 +726,106 @@ function DocSection({ title, children, defaultOpen = true }: { title: string; ch
   );
 }
 
+function ClaudeCodeSection({ apiKey, base }: { apiKey: string; base: string }) {
+  const [os, setOs] = useState<"mac" | "cmd" | "ps">("mac");
+  const tabs = [{ id: "mac", label: "🍎 macOS / Linux" }, { id: "cmd", label: "🪟 Windows CMD" }, { id: "ps", label: "⚡ PowerShell" }] as const;
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-white/50 leading-relaxed">
+        اضبط هذه المتغيرات في بيئتك ثم شغّل <code className="text-[#f97316] font-mono">claude</code> كالمعتاد. يستخدم Claude Code المتغير <code className="text-[#f97316] font-mono">ANTHROPIC_AUTH_TOKEN</code> وليس <code className="text-yellow-400/70 font-mono">API_KEY</code>.
+      </p>
+      <div className="flex gap-1">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setOs(t.id)}
+            className={`text-[10px] px-3 py-1.5 rounded-md font-medium transition-all ${os === t.id ? "bg-[#f97316]/20 text-[#f97316]" : "text-white/30 hover:text-white/60"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {os === "mac" && <CodeBlock lang="bash" code={`export ANTHROPIC_BASE_URL="${base}/api/proxy/claude"
+export ANTHROPIC_AUTH_TOKEN="${apiKey}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+claude`} />}
+      {os === "cmd" && <CodeBlock lang="bash" code={`set ANTHROPIC_BASE_URL=${base}/api/proxy/claude
+set ANTHROPIC_AUTH_TOKEN=${apiKey}
+set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+claude`} />}
+      {os === "ps" && <CodeBlock lang="bash" code={`$env:ANTHROPIC_BASE_URL="${base}/api/proxy/claude"
+$env:ANTHROPIC_AUTH_TOKEN="${apiKey}"
+$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+claude`} />}
+      <div>
+        <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">VSCode Claude Code — <code className="normal-case font-mono">~/.claude/settings.json</code></p>
+        <CodeBlock lang="json" code={`{
+  "env": {
+    "ANTHROPIC_BASE_URL": "${base}/api/proxy/claude",
+    "ANTHROPIC_AUTH_TOKEN": "${apiKey}",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+  }
+}`} />
+      </div>
+    </div>
+  );
+}
+
+function CodexSection({ apiKey, base }: { apiKey: string; base: string }) {
+  const [os, setOs] = useState<"mac" | "win">("mac");
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-white/50 leading-relaxed">
+        Codex CLI يستخدم ملف <code className="text-[#f97316] font-mono">~/.codex/config.toml</code> للإعدادات
+        و<code className="text-[#f97316] font-mono">~/.codex/auth.json</code> للمفتاح. اضبط <code className="text-[#f97316] font-mono">wire_api = "responses"</code> لاستخدام OpenAI Responses API.
+      </p>
+      <div className="flex gap-1">
+        {[{ id: "mac", label: "🍎 macOS / Linux" }, { id: "win", label: "🪟 Windows" }].map(t => (
+          <button key={t.id} onClick={() => setOs(t.id as "mac" | "win")}
+            className={`text-[10px] px-3 py-1.5 rounded-md font-medium transition-all ${os === t.id ? "bg-[#f97316]/20 text-[#f97316]" : "text-white/30 hover:text-white/60"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div>
+        <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">
+          {os === "mac" ? "~/.codex/config.toml" : "%USERPROFILE%\\.codex\\config.toml"}
+        </p>
+        <CodeBlock lang="toml" code={`model_provider = "OpenAI"
+model = "gpt-5.5"
+review_model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+network_access = "enabled"
+model_context_window = 200000
+model_auto_compact_token_limit = 160000
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "${base}/api/proxy/codex"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+goals = true`} />
+      </div>
+      <div>
+        <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">
+          {os === "mac" ? "~/.codex/auth.json" : "%USERPROFILE%\\.codex\\auth.json"}
+        </p>
+        <CodeBlock lang="json" code={`{
+  "OPENAI_API_KEY": "${apiKey}"
+}`} />
+      </div>
+      <div className="bg-blue-500/5 border border-blue-500/15 rounded-lg px-4 py-3 text-xs text-blue-400/70">
+        تأكد من وجود المجلد أولاً:
+        <code className="block font-mono text-white/40 mt-1">{os === "mac" ? "mkdir -p ~/.codex" : "mkdir %USERPROFILE%\\.codex"}</code>
+      </div>
+    </div>
+  );
+}
+
 function DocsPage({ apiKey }: { apiKey: string }) {
   const key = apiKey || "sk-cc-YOUR_API_KEY";
   const streamUrl = `${BASE}/api/chat/stream`;
@@ -840,65 +940,12 @@ while (true) {
 
       {/* Claude Code */}
       <DocSection title="🤖 Claude Code" defaultOpen={false}>
-        <p className="text-xs text-white/50 leading-relaxed">
-          يمكنك توجيه <strong className="text-white/70">Claude Code</strong> لاستخدام CommandCode Gateway عبر ضبط متغيرات البيئة قبل تشغيله. هذا يمرر طلباتك عبر قناة <code className="text-[#f97316] font-mono">rc:/claude</code> بدلاً من Anthropic مباشرة.
-        </p>
-        <CodeBlock lang="bash" code={`# ضبط متغيرات البيئة لـ Claude Code
-export ANTHROPIC_API_KEY="${key}"
-export ANTHROPIC_BASE_URL="${BASE}/api/proxy/claude"
-
-# ثم تشغيل Claude Code كالمعتاد
-claude`} />
-        <div className="bg-blue-500/5 border border-blue-500/15 rounded-lg px-4 py-3 space-y-2">
-          <p className="text-xs text-blue-400/80 font-semibold">الـ Model ID المستخدم:</p>
-          <code className="text-xs font-mono text-white/60">rc:/claude|claude-sonnet-4-5</code>
-          <p className="text-xs text-white/30 mt-1">يمكنك استبدال النموذج بأي نموذج من قائمة RC Models.</p>
-        </div>
-        <CodeBlock lang="bash" code={`# أو تمريرها مباشرة بدون export
-ANTHROPIC_API_KEY="${key}" \\
-ANTHROPIC_BASE_URL="${BASE}/api/proxy/claude" \\
-claude --model claude-sonnet-4-5`} />
+        <ClaudeCodeSection apiKey={key} base={BASE} />
       </DocSection>
 
       {/* Codex CLI */}
-      <DocSection title="⌨️ Codex CLI (OpenAI)" defaultOpen={false}>
-        <p className="text-xs text-white/50 leading-relaxed">
-          <strong className="text-white/70">Codex CLI</strong> وأي أداة تستخدم OpenAI SDK يمكن توصيلها بـ CommandCode Gateway عبر متغير <code className="text-[#f97316] font-mono">OPENAI_BASE_URL</code>. هذا يوجه الطلبات عبر قناة <code className="text-[#f97316] font-mono">rc:/codex-pro</code>.
-        </p>
-        <CodeBlock lang="bash" code={`# تثبيت Codex CLI (إن لم يكن مثبتاً)
-npm install -g @openai/codex
-
-# ضبط المتغيرات
-export OPENAI_API_KEY="${key}"
-export OPENAI_BASE_URL="${BASE}/api/proxy/codex"
-
-# تشغيل Codex
-codex`} />
-        <CodeBlock lang="bash" code={`# مثال مع تحديد النموذج
-OPENAI_API_KEY="${key}" \\
-OPENAI_BASE_URL="${BASE}/api/proxy/codex" \\
-codex --model gpt-5.4 "اشرح هذا الكود"
-
-# أو استخدام gpt-5.4-mini للأسرع
-codex --model gpt-5.4-mini "أضف unit tests لهذه الدالة"`} />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3">
-            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">النماذج المتاحة عبر RC</p>
-            <div className="space-y-1">
-              {["gpt-5.4", "gpt-5.4-mini", "gpt-5", "gpt-4o", "o3", "o4-mini"].map(m => (
-                <code key={m} className="block text-xs font-mono text-green-400/70">{m}</code>
-              ))}
-            </div>
-          </div>
-          <div className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3">
-            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">القنوات المتاحة</p>
-            <div className="space-y-1">
-              {["/codex-pro → OpenAI Completions", "/codex → OpenAI Responses", "/gemini → Google Gemini", "/deepseek → DeepSeek"].map(c => (
-                <code key={c} className="block text-xs font-mono text-purple-400/70">{c}</code>
-              ))}
-            </div>
-          </div>
-        </div>
+      <DocSection title="⌨️ Codex CLI" defaultOpen={false}>
+        <CodexSection apiKey={key} base={BASE} />
       </DocSection>
 
       {/* Cursor / VS Code */}

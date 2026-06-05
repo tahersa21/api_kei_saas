@@ -507,6 +507,7 @@ router.post("/proxy/codex/v1/chat/completions", async (req, res) => {
       body: JSON.stringify(req.body),
     });
 
+
     if (userKeyId) {
       db.update(userKeysTable)
         .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
@@ -529,6 +530,73 @@ router.post("/proxy/codex/v1/chat/completions", async (req, res) => {
     res.end();
   } catch (err) {
     req.log.error({ err }, "Codex proxy error");
+    if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } });
+    else res.end();
+  }
+});
+
+// ── PROXY: OpenAI Responses API — for Codex CLI (wire_api = "responses") ──────
+// Codex CLI config.toml: base_url = "<host>/api/proxy/codex", wire_api = "responses"
+// Codex CLI sends: POST <base_url>/v1/responses
+
+router.post("/proxy/codex/v1/responses", async (req, res) => {
+  const authHeader = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
+  const xApiKey = req.headers["x-api-key"] as string | undefined;
+  const incomingKey = authHeader || xApiKey;
+
+  let rcKey: string | undefined;
+  let userKeyId: string | undefined;
+
+  if (incomingKey?.startsWith("sk-cc-")) {
+    const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
+    if (!rows[0] || !rows[0].isActive) {
+      res.status(401).json({ error: { message: "Invalid or inactive CommandCode API key", type: "invalid_request_error", code: "invalid_api_key" } });
+      return;
+    }
+    userKeyId = rows[0].id;
+    const poolKey = await getNextRcKey();
+    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
+    rcKey = poolKey.key;
+  } else if (incomingKey) {
+    rcKey = incomingKey;
+  } else {
+    const poolKey = await getNextRcKey();
+    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
+    rcKey = poolKey.key;
+  }
+
+  try {
+    const upstream = await fetch(`${RC_BASE}/codex/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": `Bearer ${rcKey}`,
+      },
+      body: JSON.stringify(req.body),
+    });
+
+    if (userKeyId) {
+      db.update(userKeysTable)
+        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
+        .where(eq(userKeysTable.id, userKeyId))
+        .catch(() => {});
+    }
+
+    const ct = upstream.headers.get("content-type") || "application/json";
+    res.status(upstream.status).setHeader("content-type", ct);
+    if (!upstream.ok || !upstream.body) {
+      const text = await upstream.text();
+      res.send(text); return;
+    }
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } catch (err) {
+    req.log.error({ err }, "Codex responses proxy error");
     if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } });
     else res.end();
   }
