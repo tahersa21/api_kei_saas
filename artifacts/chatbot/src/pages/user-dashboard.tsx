@@ -838,6 +838,107 @@ while (true) {
 }`} />
       </DocSection>
 
+      {/* Claude Code */}
+      <DocSection title="🤖 Claude Code" defaultOpen={false}>
+        <p className="text-xs text-white/50 leading-relaxed">
+          يمكنك توجيه <strong className="text-white/70">Claude Code</strong> لاستخدام CommandCode Gateway عبر ضبط متغيرات البيئة قبل تشغيله. هذا يمرر طلباتك عبر قناة <code className="text-[#f97316] font-mono">rc:/claude</code> بدلاً من Anthropic مباشرة.
+        </p>
+        <CodeBlock lang="bash" code={`# ضبط متغيرات البيئة لـ Claude Code
+export ANTHROPIC_API_KEY="${key}"
+export ANTHROPIC_BASE_URL="${BASE}/api/proxy/claude"
+
+# ثم تشغيل Claude Code كالمعتاد
+claude`} />
+        <div className="bg-blue-500/5 border border-blue-500/15 rounded-lg px-4 py-3 space-y-2">
+          <p className="text-xs text-blue-400/80 font-semibold">الـ Model ID المستخدم:</p>
+          <code className="text-xs font-mono text-white/60">rc:/claude|claude-sonnet-4-5</code>
+          <p className="text-xs text-white/30 mt-1">يمكنك استبدال النموذج بأي نموذج من قائمة RC Models.</p>
+        </div>
+        <CodeBlock lang="bash" code={`# أو تمريرها مباشرة بدون export
+ANTHROPIC_API_KEY="${key}" \\
+ANTHROPIC_BASE_URL="${BASE}/api/proxy/claude" \\
+claude --model claude-sonnet-4-5`} />
+      </DocSection>
+
+      {/* Codex CLI */}
+      <DocSection title="⌨️ Codex CLI (OpenAI)" defaultOpen={false}>
+        <p className="text-xs text-white/50 leading-relaxed">
+          <strong className="text-white/70">Codex CLI</strong> وأي أداة تستخدم OpenAI SDK يمكن توصيلها بـ CommandCode Gateway عبر متغير <code className="text-[#f97316] font-mono">OPENAI_BASE_URL</code>. هذا يوجه الطلبات عبر قناة <code className="text-[#f97316] font-mono">rc:/codex-pro</code>.
+        </p>
+        <CodeBlock lang="bash" code={`# تثبيت Codex CLI (إن لم يكن مثبتاً)
+npm install -g @openai/codex
+
+# ضبط المتغيرات
+export OPENAI_API_KEY="${key}"
+export OPENAI_BASE_URL="${BASE}/api/proxy/codex"
+
+# تشغيل Codex
+codex`} />
+        <CodeBlock lang="bash" code={`# مثال مع تحديد النموذج
+OPENAI_API_KEY="${key}" \\
+OPENAI_BASE_URL="${BASE}/api/proxy/codex" \\
+codex --model gpt-5.4 "اشرح هذا الكود"
+
+# أو استخدام gpt-5.4-mini للأسرع
+codex --model gpt-5.4-mini "أضف unit tests لهذه الدالة"`} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3">
+            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">النماذج المتاحة عبر RC</p>
+            <div className="space-y-1">
+              {["gpt-5.4", "gpt-5.4-mini", "gpt-5", "gpt-4o", "o3", "o4-mini"].map(m => (
+                <code key={m} className="block text-xs font-mono text-green-400/70">{m}</code>
+              ))}
+            </div>
+          </div>
+          <div className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3">
+            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">القنوات المتاحة</p>
+            <div className="space-y-1">
+              {["/codex-pro → OpenAI Completions", "/codex → OpenAI Responses", "/gemini → Google Gemini", "/deepseek → DeepSeek"].map(c => (
+                <code key={c} className="block text-xs font-mono text-purple-400/70">{c}</code>
+              ))}
+            </div>
+          </div>
+        </div>
+      </DocSection>
+
+      {/* Cursor / VS Code */}
+      <DocSection title="🖱️ Cursor / Continue.dev / VS Code" defaultOpen={false}>
+        <p className="text-xs text-white/50 leading-relaxed">
+          أي أداة تدعم custom OpenAI endpoint يمكن توصيلها. اضبط:
+        </p>
+        <div className="space-y-3">
+          <div>
+            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Cursor — settings.json</p>
+            <CodeBlock lang="json" code={`{
+  "openai.apiKey": "${key}",
+  "openai.baseUrl": "${BASE}/api/proxy/codex",
+  "openai.model": "gpt-5.4"
+}`} />
+          </div>
+          <div>
+            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Continue.dev — config.json</p>
+            <CodeBlock lang="json" code={`{
+  "models": [
+    {
+      "title": "CommandCode via RC",
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "apiKey": "${key}",
+      "apiBase": "${BASE}/api/proxy/codex"
+    },
+    {
+      "title": "CommandCode Claude",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "apiKey": "${key}",
+      "apiBase": "${BASE}/api/proxy/claude"
+    }
+  ]
+}`} />
+          </div>
+        </div>
+      </DocSection>
+
       {/* Python example */}
       <DocSection title="🐍 Python" defaultOpen={false}>
         <CodeBlock lang="python" code={`import httpx, json

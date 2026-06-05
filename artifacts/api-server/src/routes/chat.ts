@@ -375,6 +375,165 @@ router.get("/chat/ag-models", async (req, res) => {
   }
 });
 
+// ── PROXY: Anthropic-compatible — for Claude Code ─────────────────────────────
+// Set: ANTHROPIC_API_KEY=<your-cc-key> ANTHROPIC_BASE_URL=<host>/api/proxy/claude
+// Claude Code will POST to /api/proxy/claude/v1/messages automatically.
+
+router.get("/proxy/claude/v1/models", (_req, res) => {
+  res.json({
+    object: "list",
+    data: [
+      { id: "claude-opus-4-5",   object: "model", created: 1700000000, owned_by: "anthropic" },
+      { id: "claude-sonnet-4-5", object: "model", created: 1700000000, owned_by: "anthropic" },
+      { id: "claude-haiku-3-5",  object: "model", created: 1700000000, owned_by: "anthropic" },
+    ],
+  });
+});
+
+router.post("/proxy/claude/v1/messages", async (req, res) => {
+  const xApiKey = req.headers["x-api-key"] as string | undefined;
+  const authHeader = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
+  const incomingKey = xApiKey || authHeader;
+
+  let rcKey: string | undefined;
+  let userKeyId: string | undefined;
+
+  if (incomingKey?.startsWith("sk-cc-")) {
+    const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
+    if (!rows[0] || !rows[0].isActive) {
+      res.status(401).json({ type: "error", error: { type: "authentication_error", message: "Invalid or inactive CommandCode API key" } });
+      return;
+    }
+    userKeyId = rows[0].id;
+    const poolKey = await getNextRcKey();
+    if (!poolKey) { res.status(503).json({ type: "error", error: { type: "api_error", message: "No RC keys in pool" } }); return; }
+    rcKey = poolKey.key;
+  } else if (incomingKey) {
+    rcKey = incomingKey; // direct RC key
+  } else {
+    const poolKey = await getNextRcKey();
+    if (!poolKey) { res.status(503).json({ type: "error", error: { type: "api_error", message: "No RC keys in pool" } }); return; }
+    rcKey = poolKey.key;
+  }
+
+  try {
+    const upstream = await fetch(`${RC_BASE}/claude/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": rcKey,
+        "anthropic-version": (req.headers["anthropic-version"] as string) || "2023-06-01",
+        "anthropic-beta": (req.headers["anthropic-beta"] as string) || "claudecode-2025-05-14,interleaved-thinking-2025-05-14",
+        "user-agent": "claude-code/2.1.148",
+        "x-claude-code-disable-nonessential-traffic": "1",
+        "x-app": "cli",
+      },
+      body: JSON.stringify(req.body),
+    });
+
+    if (userKeyId) {
+      db.update(userKeysTable)
+        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
+        .where(eq(userKeysTable.id, userKeyId))
+        .catch(() => {});
+    }
+
+    const ct = upstream.headers.get("content-type") || "application/json";
+    res.status(upstream.status).setHeader("content-type", ct);
+    if (!upstream.ok || !upstream.body) {
+      const text = await upstream.text();
+      res.send(text); return;
+    }
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } catch (err) {
+    req.log.error({ err }, "Claude proxy error");
+    if (!res.headersSent) res.status(500).json({ type: "error", error: { type: "api_error", message: String(err) } });
+    else res.end();
+  }
+});
+
+// ── PROXY: OpenAI-compatible — for Codex CLI / Cursor / Continue.dev ──────────
+// Set: OPENAI_API_KEY=<your-cc-key> OPENAI_BASE_URL=<host>/api/proxy/codex
+// Codex CLI will POST to /api/proxy/codex/v1/chat/completions automatically.
+
+router.get("/proxy/codex/v1/models", (_req, res) => {
+  res.json({
+    object: "list",
+    data: ["gpt-5.4", "gpt-5.4-mini", "gpt-5", "gpt-4o", "o3", "o4-mini"].map(id => ({
+      id, object: "model", created: 1700000000, owned_by: "openai",
+    })),
+  });
+});
+
+router.post("/proxy/codex/v1/chat/completions", async (req, res) => {
+  const authHeader = (req.headers["authorization"] as string | undefined)?.replace(/^bearer\s+/i, "");
+  const xApiKey = req.headers["x-api-key"] as string | undefined;
+  const incomingKey = authHeader || xApiKey;
+
+  let rcKey: string | undefined;
+  let userKeyId: string | undefined;
+
+  if (incomingKey?.startsWith("sk-cc-")) {
+    const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
+    if (!rows[0] || !rows[0].isActive) {
+      res.status(401).json({ error: { message: "Invalid or inactive CommandCode API key", type: "invalid_request_error", code: "invalid_api_key" } });
+      return;
+    }
+    userKeyId = rows[0].id;
+    const poolKey = await getNextRcKey();
+    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
+    rcKey = poolKey.key;
+  } else if (incomingKey) {
+    rcKey = incomingKey;
+  } else {
+    const poolKey = await getNextRcKey();
+    if (!poolKey) { res.status(503).json({ error: { message: "No RC keys in pool", type: "api_error" } }); return; }
+    rcKey = poolKey.key;
+  }
+
+  try {
+    const upstream = await fetch(`${RC_BASE}/codex-pro/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": `Bearer ${rcKey}`,
+      },
+      body: JSON.stringify(req.body),
+    });
+
+    if (userKeyId) {
+      db.update(userKeysTable)
+        .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
+        .where(eq(userKeysTable.id, userKeyId))
+        .catch(() => {});
+    }
+
+    const ct = upstream.headers.get("content-type") || "application/json";
+    res.status(upstream.status).setHeader("content-type", ct);
+    if (!upstream.ok || !upstream.body) {
+      const text = await upstream.text();
+      res.send(text); return;
+    }
+    const reader = upstream.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } catch (err) {
+    req.log.error({ err }, "Codex proxy error");
+    if (!res.headersSent) res.status(500).json({ error: { message: String(err), type: "api_error" } });
+    else res.end();
+  }
+});
+
 router.post("/chat/stream", async (req, res) => {
   const headerKey = req.headers["x-api-key"] as string | undefined;
 
