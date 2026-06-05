@@ -3,7 +3,6 @@ import RoutingPage from "@/pages/dashboard/routing";
 import { useGetChatModels, useGetChatRcModels, useGetChatAgModels } from "@workspace/api-client-react";
 import { useAdminAuth, useAdminFetch } from "@/context/admin-auth";
 import { useChatStream } from "@/hooks/use-chat-stream";
-import { useRightCodeKey } from "@/hooks/use-rightcode-key";
 import { useAiGoCodeKey } from "@/hooks/use-aigocode-key";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,8 +43,6 @@ type RoutingRule = {
   providers: RoutingProviderEntry[];
   createdAt: string;
 };
-
-type ProviderType = "text" | "video" | "audio";
 
 type CustomProvider = {
   id: string; name: string; slug: string; type: string;
@@ -137,19 +134,6 @@ function LoginDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
 }
 
 // ─── Providers Panel ──────────────────────────────────────────────────────────
-
-const BUILTIN_PROVIDERS = [
-  {
-    slug: "commandcode", name: "CommandCode", type: "text" as ProviderType,
-    baseUrl: "https://api.commandcode.ai", note: "Built-in · round-robin key pool",
-    detail: "12+ models",
-  },
-  {
-    slug: "rightcode", name: "Right Code", type: "text" as ProviderType,
-    baseUrl: "https://right.codes", note: "Built-in · 7 channels",
-    detail: "58+ models",
-  },
-];
 
 function ProvidersPanel({ isAdmin, onProvidersChange }: { isAdmin: boolean; onProvidersChange?: () => void }) {
   const apiFetch = useAdminFetch();
@@ -284,32 +268,11 @@ function ProvidersPanel({ isAdmin, onProvidersChange }: { isAdmin: boolean; onPr
         </div>
       )}
 
-      {/* Built-in providers */}
-      <div className="space-y-2">
-        <p className="text-[9px] text-muted-foreground/50 uppercase tracking-widest">Built-in</p>
-        {BUILTIN_PROVIDERS.map(p => (
-          <div key={p.slug} className="flex items-center gap-3 border border-border/40 rounded-lg px-4 py-3 bg-card/20">
-            <div className="flex-none">{typeIcon(p.type, "w-4 h-4")}</div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">{p.name}</span>
-                <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary/10 text-primary/80">{p.type}</span>
-              </div>
-              <p className="text-[10px] text-muted-foreground font-sans mt-0.5">{p.note} · {p.detail}</p>
-            </div>
-            <div className="flex-none flex items-center gap-2">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[10px] text-emerald-500/80 font-sans">active</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Custom providers */}
+      {/* Providers list */}
       {isAdmin && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <p className="text-[9px] text-muted-foreground/50 uppercase tracking-widest">Custom</p>
+            <p className="text-[9px] text-muted-foreground/50 uppercase tracking-widest">Providers</p>
             <button onClick={load} className="text-muted-foreground/40 hover:text-muted-foreground">
               <RefreshCw className="w-3 h-3" />
             </button>
@@ -319,7 +282,7 @@ function ProvidersPanel({ isAdmin, onProvidersChange }: { isAdmin: boolean; onPr
             <div className="flex justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
           ) : providers.length === 0 ? (
             <div className="text-center py-10 text-muted-foreground/40 text-xs font-sans">
-              No custom providers yet. Click "Add Provider" to get started.
+              No providers yet. Click "Add Provider" to get started.
             </div>
           ) : (
             providers.map(p => (
@@ -446,8 +409,7 @@ const response = await client.chat.completions.create({
 console.log(response.choices[0].message.content);`,
 
     "Claude Code": `# ─── Claude Code ───────────────────────────────────────────────────
-# يتصل بـ /api/v1/messages — يعمل عبر RC /claude-aws
-# يتطلب وجود RC keys في الـ pool (إدارتها من Console → RC Keys)
+# يتصل بـ /api/v1/messages — يتحكم به Smart Routing في لوحة الإدارة
 
 # 1. تصدير المتغيرات (أو أضفها في ~/.bashrc / ~/.zshrc)
 export ANTHROPIC_BASE_URL="${baseUrl}/api"
@@ -481,8 +443,7 @@ with client.messages.stream(
         print(text, end="", flush=True)`,
 
     "Codex CLI": `# ─── Codex CLI ─────────────────────────────────────────────────────
-# يتصل بـ /api/v1/responses — يعمل عبر RC /codex
-# يتطلب وجود RC keys في الـ pool (إدارتها من Console → RC Keys)
+# يتصل بـ /api/v1/responses — يتحكم به Smart Routing في لوحة الإدارة
 
 # 1. تصدير المتغيرات
 export OPENAI_BASE_URL="${baseUrl}/api"
