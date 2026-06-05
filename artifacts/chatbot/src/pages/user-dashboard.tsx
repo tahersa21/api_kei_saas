@@ -140,7 +140,7 @@ function HomePage({ stats, keyCount, creditBalance, loading, range, onRange }: {
         <StatCard dot="bg-yellow-400" label="Today's Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-yellow-400/50" />} />
         <StatCard dot="bg-red-400" label="Total Cost" value="$0.00" icon={<CreditCard className="w-4 h-4 text-red-400/50" />} />
         <StatCard dot="bg-cyan-400" label="My API Keys" value={keyCount} icon={<Key className="w-4 h-4 text-cyan-400/50" />} />
-        <StatCard dot="bg-emerald-400" label="Credit Balance" value={loading ? "…" : `${(creditBalance ?? 0).toLocaleString()} cr`} sub="1 cr = $0.01" icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
+        <StatCard dot="bg-emerald-400" label="Balance" value={loading ? "…" : `$${((creditBalance ?? 0) / 100).toFixed(2)}`} icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
       </div>
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
@@ -190,7 +190,7 @@ function DashboardPage({ stats, creditBalance, loading, range, onRange }: { stat
         <RangeTabs value={range} onChange={onRange} />
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard dot="bg-emerald-400" label="Credit Balance" value={loading ? "…" : `${(creditBalance ?? 0).toLocaleString()} cr`} sub="1 cr = $0.01" icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
+        <StatCard dot="bg-emerald-400" label="Balance" value={loading ? "…" : `$${((creditBalance ?? 0) / 100).toFixed(2)}`} icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
         <StatCard dot="bg-orange-400" label="Total Cost" value="$0.00" />
         <StatCard dot="bg-blue-400" label="Total Tokens" value="0" />
         <StatCard dot="bg-red-400" label="Total Requests" value={val(stats?.rangeRequests ?? 0)} />
@@ -756,52 +756,50 @@ function ModelsPage() {
 
 // ── SUBSCRIBE PAGE ────────────────────────────────────────────────────────────
 function SubscribePage({ creditBalance }: { creditBalance: number }) {
-  const [amount, setAmount] = useState("1");
+  const [amount, setAmount] = useState("10");
+  const balanceDollars = (creditBalance / 100).toFixed(2);
+  const QUICK = [5, 10, 20, 50, 100];
+
   return (
-    <div className="space-y-4">
-      <h1 className="text-lg font-bold text-white">Subscribe</h1>
-      <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-white">Balance Top-up</h2>
-          <span className="text-xs text-green-400 border border-green-500/20 bg-green-500/10 px-3 py-1 rounded-full flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 bg-green-400 rounded-full" /> Current balance {creditBalance.toLocaleString()} cr
-          </span>
+    <div className="space-y-5 max-w-lg">
+      <h1 className="text-lg font-bold text-white">Top Up Balance</h1>
+
+      {/* Current balance */}
+      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-5 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Coins className="w-4 h-4 text-emerald-400" />
+          <span className="text-sm text-emerald-400 font-medium">Current Balance</span>
         </div>
-        <div>
-          <label className="text-sm text-white/60 mb-2 block">Top-up amount ($)</label>
-          <div className="flex gap-3">
-            <div className="flex items-center gap-2 flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2.5">
-              <span className="text-white/50 text-sm">$</span>
-              <input type="number" value={amount} min={1} onChange={e => setAmount(e.target.value)}
-                className="bg-transparent flex-1 text-white text-sm focus:outline-none" />
-            </div>
-            <button className="bg-green-500 hover:bg-green-600 text-white px-6 py-2.5 rounded-lg text-sm font-semibold transition-colors">
-              Recharge Now
-            </button>
-          </div>
-        </div>
+        <span className="text-xl font-bold text-emerald-400">${balanceDollars}</span>
       </div>
-      <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-6">
-        <h2 className="text-base font-semibold text-white mb-4">Packages</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[{ name: "Starter", price: "$5", features: ["5M tokens", "All channels", "Email support"] },
-            { name: "Pro", price: "$20", features: ["25M tokens", "Priority routing", "Priority support"], popular: true },
-            { name: "Enterprise", price: "$100", features: ["Unlimited tokens", "Dedicated routing", "24/7 support"] }].map(pkg => (
-            <div key={pkg.name} className={`border rounded-xl p-5 space-y-4 ${pkg.popular ? "border-[#f97316]/40 bg-[#f97316]/5" : "border-white/[0.08] bg-white/[0.02]"}`}>
-              {pkg.popular && <span className="text-[10px] bg-[#f97316] text-white px-2 py-0.5 rounded-full">POPULAR</span>}
-              <div>
-                <h3 className="text-base font-bold text-white">{pkg.name}</h3>
-                <p className="text-2xl font-bold text-white mt-1">{pkg.price}<span className="text-xs text-white/40">/mo</span></p>
-              </div>
-              <ul className="space-y-1.5">
-                {pkg.features.map(f => <li key={f} className="text-xs text-white/60 flex items-center gap-2"><span className="text-green-400">✓</span>{f}</li>)}
-              </ul>
-              <button className={`w-full py-2 rounded-lg text-sm font-medium transition-colors ${pkg.popular ? "bg-[#f97316] hover:bg-[#ea6c0f] text-white" : "bg-white/5 hover:bg-white/10 text-white/70"}`}>
-                Subscribe
-              </button>
-            </div>
+
+      {/* Quick amounts */}
+      <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5 space-y-4">
+        <p className="text-sm font-semibold text-white">Select Amount</p>
+        <div className="flex flex-wrap gap-2">
+          {QUICK.map(v => (
+            <button key={v} onClick={() => setAmount(String(v))}
+              className={`px-5 py-2 rounded-lg text-sm font-semibold border transition-colors ${String(v) === amount ? "bg-[#f97316] border-[#f97316] text-white" : "bg-white/[0.04] border-white/[0.08] text-white/60 hover:border-white/20 hover:text-white"}`}>
+              ${v}
+            </button>
           ))}
         </div>
+
+        {/* Custom amount */}
+        <div>
+          <label className="text-xs text-white/40 uppercase tracking-wider mb-2 block">Or enter custom amount</label>
+          <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 focus-within:border-[#f97316]/50 transition-colors">
+            <span className="text-white/50 text-sm font-mono">$</span>
+            <input type="number" value={amount} min={1} step={1}
+              onChange={e => setAmount(e.target.value)}
+              className="bg-transparent flex-1 text-white text-sm focus:outline-none font-mono" />
+          </div>
+        </div>
+
+        <button className="w-full bg-[#f97316] hover:bg-[#ea6c0f] text-white py-3 rounded-lg text-sm font-bold transition-colors">
+          Add ${Number(amount) > 0 ? Number(amount).toFixed(2) : "0.00"} to Balance
+        </button>
+        <p className="text-[11px] text-white/30 text-center">Payments are handled securely. Balance never expires.</p>
       </div>
     </div>
   );
@@ -1410,7 +1408,7 @@ export default function UserDashboard() {
             {/* Credit balance badge */}
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
               <Coins className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-xs font-mono text-emerald-400">{creditBalance.toLocaleString()} cr</span>
+              <span className="text-xs font-mono text-emerald-400">${(creditBalance / 100).toFixed(2)}</span>
             </div>
             <div className="flex items-center gap-2 pl-3 border-l border-white/[0.07]">
               <span className="text-xs text-white/40 hidden sm:block">{user?.primaryEmailAddress?.emailAddress}</span>
