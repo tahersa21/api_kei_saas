@@ -396,13 +396,22 @@ async function handleCodexResponses(req: import("express").Request, res: import(
       return;
     }
 
-    // Extract token usage from SSE stream (response.completed event)
+    // Extract token usage from SSE stream
     let tokensIn = 0;
     let tokensOut = 0;
-    const usageMatch = sseBuffer.match(/"input_tokens"\s*:\s*(\d+)/);
-    const usageOutMatch = sseBuffer.match(/"output_tokens"\s*:\s*(\d+)/);
-    if (usageMatch) tokensIn = parseInt(usageMatch[1], 10);
-    if (usageOutMatch) tokensOut = parseInt(usageOutMatch[1], 10);
+    // Log last 800 chars to see the usage event format
+    req.log.info({ tail: sseBuffer.slice(-800) }, "codex-responses: SSE tail for token debug");
+    // Try Responses API format: input_tokens / output_tokens
+    const mIn = sseBuffer.match(/"input_tokens"\s*:\s*(\d+)/);
+    const mOut = sseBuffer.match(/"output_tokens"\s*:\s*(\d+)/);
+    // Try Chat Completions format: prompt_tokens / completion_tokens
+    const mPrompt = sseBuffer.match(/"prompt_tokens"\s*:\s*(\d+)/);
+    const mCompletion = sseBuffer.match(/"completion_tokens"\s*:\s*(\d+)/);
+    if (mIn) tokensIn = parseInt(mIn[1], 10);
+    else if (mPrompt) tokensIn = parseInt(mPrompt[1], 10);
+    if (mOut) tokensOut = parseInt(mOut[1], 10);
+    else if (mCompletion) tokensOut = parseInt(mCompletion[1], 10);
+    req.log.info({ tokensIn, tokensOut }, "codex-responses: parsed tokens");
 
     logRequest("ok", tokensIn, tokensOut);
     res.end();
