@@ -4,7 +4,32 @@
   "registrationsEnabled": true,
   "siteName": "CommandCode",
   "maintenanceMode": false,
-  "modelOverrides": {},
+  "modelOverrides": {
+    "route:gpt-5.4": {
+      "price": {
+        "input": 20,
+        "output": 12
+      }
+    },
+    "route:gpt-5.4-mini": {
+      "price": {
+        "input": 40,
+        "output": 50
+      }
+    },
+    "route:gpt-5.3-codex-spark": {
+      "price": {
+        "input": 34,
+        "output": 34
+      }
+    },
+    "route:gpt-5.5": {
+      "price": {
+        "input": 34,
+        "output": 43
+      }
+    }
+  },
   "userCredits": {
     "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": 1200
   },

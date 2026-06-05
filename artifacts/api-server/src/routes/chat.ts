@@ -5,6 +5,7 @@ import { db, userKeysTable, requestLogsTable, providersTable, routingRulesTable 
 import type { RoutingProviderEntry } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute, penalizeRateLimit } from "../lib/routing-engine";
+import { adjustUserCredit } from "../lib/settings";
 
 const router = Router();
 
@@ -161,6 +162,8 @@ router.get("/chat/models-catalog", async (_req, res) => {
       type: p.providerType,
       modelId: p.modelId,
     })),
+    priceInputPer1M: r.priceInputPer1M ?? null,
+    priceOutputPer1M: r.priceOutputPer1M ?? null,
   }));
   res.json({ cc: [], rc: [], routing });
 });
@@ -303,6 +306,8 @@ async function handleCodexResponses(req: import("express").Request, res: import(
 
   let userKeyId: string | undefined;
 
+  let clerkUserId: string | undefined;
+
   if (incomingKey?.startsWith("sk-cc-")) {
     const rows = await db.select().from(userKeysTable).where(eq(userKeysTable.key, incomingKey)).limit(1);
     if (!rows[0] || !rows[0].isActive) {
@@ -310,6 +315,7 @@ async function handleCodexResponses(req: import("express").Request, res: import(
       return;
     }
     userKeyId = rows[0].id;
+    clerkUserId = rows[0].clerkUserId;
   }
 
   // Resolve provider via Smart Routing
@@ -335,11 +341,18 @@ async function handleCodexResponses(req: import("express").Request, res: import(
 
   const logRequest = (status: "ok" | "error", tokensIn = 0, tokensOut = 0, errorMsg?: string) => {
     const elapsedMs = Date.now() - startTime;
+    const { priceInputPer1M, priceOutputPer1M } = routeResult.route;
+    let costCredits: number | null = null;
+    if (status === "ok" && (tokensIn || tokensOut) && priceInputPer1M != null && priceOutputPer1M != null) {
+      const costUsd = (tokensIn * priceInputPer1M + tokensOut * priceOutputPer1M) / 1_000_000;
+      costCredits = Math.round(costUsd * 100); // 1 credit = $0.01
+    }
     const ops: Promise<unknown>[] = [
       db.insert(requestLogsTable).values({
         id: randomUUID(), userKeyId: userKeyId ?? null, ccKeyId: null,
         model: requestedModel, elapsedMs, status,
         tokensIn: tokensIn || null, tokensOut: tokensOut || null,
+        costCredits: costCredits ?? null,
         errorMsg: errorMsg?.slice(0, 255) ?? null,
       }),
     ];
@@ -347,6 +360,9 @@ async function handleCodexResponses(req: import("express").Request, res: import(
       ops.push(db.update(userKeysTable)
         .set({ usageCount: sql`${userKeysTable.usageCount} + 1`, lastUsedAt: new Date() })
         .where(eq(userKeysTable.id, userKeyId)));
+    }
+    if (clerkUserId && costCredits && costCredits > 0) {
+      adjustUserCredit(clerkUserId, -costCredits, `API usage: ${requestedModel} (${tokensIn}in/${tokensOut}out tokens)`);
     }
     Promise.all(ops).catch(() => {});
   };

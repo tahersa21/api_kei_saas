@@ -16,6 +16,7 @@ import {
 type Stats = {
   totalRequests: number; rangeRequests: number; todayRequests: number;
   totalTokens: number; todayTokens: number;
+  totalCostCredits: number; todayCostCredits: number;
   topModels: { model: string; count: number }[];
   recentLogs: { model: string; status: string; elapsedMs: number | null; createdAt: string }[];
 };
@@ -23,7 +24,7 @@ type UserKey = {
   id: string; label: string; key: string; isActive: boolean;
   usageCount: number; lastUsedAt: string | null; createdAt: string;
 };
-type Log = { id: string; model: string; status: string; elapsedMs: number | null; createdAt: string };
+type Log = { id: string; model: string; status: string; elapsedMs: number | null; tokensIn: number | null; tokensOut: number | null; costCredits: number | null; createdAt: string };
 type LogsResponse = { total: number; page: number; pageSize: number; logs: Log[] };
 type Range = "today" | "7d" | "30d";
 type KeyLimit = { id: string; label: string; isActive: boolean; rpmLimit: number; currentRpm: number };
@@ -192,8 +193,8 @@ function DashboardPage({ stats, creditBalance, loading, range, onRange }: { stat
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard dot="bg-emerald-400" label="Balance" value={loading ? "…" : `$${((creditBalance ?? 0) / 100).toFixed(2)}`} icon={<Coins className="w-4 h-4 text-emerald-400/50" />} />
-        <StatCard dot="bg-orange-400" label="Total Cost" value="$0.00" />
-        <StatCard dot="bg-blue-400" label="Total Tokens" value="0" />
+        <StatCard dot="bg-orange-400" label="Total Cost" value={loading ? "…" : `$${((stats?.totalCostCredits ?? 0) / 100).toFixed(4)}`} />
+        <StatCard dot="bg-blue-400" label="Total Tokens" value={loading ? "…" : (stats?.totalTokens ?? 0).toLocaleString()} />
         <StatCard dot="bg-red-400" label="Total Requests" value={val(stats?.rangeRequests ?? 0)} />
       </div>
 
@@ -356,15 +357,17 @@ function UsageLogsPage() {
               <tr className="border-b border-white/[0.06] text-white/40 uppercase tracking-wider">
                 <th className="text-left px-4 py-3 font-medium">Model</th>
                 <th className="text-left px-4 py-3 font-medium">Status</th>
+                <th className="text-left px-4 py-3 font-medium">Tokens</th>
+                <th className="text-left px-4 py-3 font-medium">Cost</th>
                 <th className="text-left px-4 py-3 font-medium">Duration</th>
                 <th className="text-left px-4 py-3 font-medium">Time</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={4} className="text-center py-12 text-white/30">Loading…</td></tr>
+                <tr><td colSpan={6} className="text-center py-12 text-white/30">Loading…</td></tr>
               ) : !data || data.logs.length === 0 ? (
-                <tr><td colSpan={4} className="text-center py-12 text-white/30">
+                <tr><td colSpan={6} className="text-center py-12 text-white/30">
                   <p className="font-medium text-sm">No logs</p>
                   <p className="text-white/20 mt-1">No usage logs found for this period</p>
                 </td></tr>
@@ -375,6 +378,16 @@ function UsageLogsPage() {
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${log.status === "ok" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
                       {log.status === "ok" ? "OK" : "Error"}
                     </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-white/50 text-[11px]">
+                    {(log.tokensIn != null || log.tokensOut != null)
+                      ? <span><span className="text-blue-400/70">{(log.tokensIn ?? 0).toLocaleString()}</span><span className="text-white/20">↑</span> <span className="text-emerald-400/70">{(log.tokensOut ?? 0).toLocaleString()}</span><span className="text-white/20">↓</span></span>
+                      : <span className="text-white/20">—</span>}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-white/50 text-[11px]">
+                    {log.costCredits != null && log.costCredits > 0
+                      ? <span className="text-orange-400/80">${(log.costCredits / 100).toFixed(4)}</span>
+                      : <span className="text-white/20">—</span>}
                   </td>
                   <td className="px-4 py-3 text-white/40 font-mono">{log.elapsedMs ? `${(log.elapsedMs / 1000).toFixed(1)}s` : "—"}</td>
                   <td className="px-4 py-3 text-white/40">{new Date(log.createdAt).toLocaleString()}</td>
@@ -581,7 +594,7 @@ function ApiKeysPage({ keys, loadingKeys, onRefresh }: { keys: UserKey[]; loadin
 // ── MODELS PAGE ───────────────────────────────────────────────────────────────
 type CatalogModel = { id: string; name: string; group: string; description: string; tier: string };
 type RcChannel   = { channel: string; group: string; models: CatalogModel[] };
-type RoutingEntry = { id: string; name: string; description: string | null; providers: { type: string; modelId: string }[] };
+type RoutingEntry = { id: string; name: string; description: string | null; providers: { type: string; modelId: string }[]; priceInputPer1M?: number | null; priceOutputPer1M?: number | null };
 type ModelsCatalog = { cc: CatalogModel[]; rc: RcChannel[]; routing: RoutingEntry[] };
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -681,6 +694,12 @@ function ModelsPage() {
                           {p.modelId}
                         </span>
                       ))}
+                    </div>
+                  )}
+                  {(r.priceInputPer1M != null || r.priceOutputPer1M != null) && (
+                    <div className="mt-2 flex items-center gap-3">
+                      {r.priceInputPer1M != null && <span className="text-[10px] text-blue-400/70">In: <span className="font-mono">${r.priceInputPer1M}/1M</span></span>}
+                      {r.priceOutputPer1M != null && <span className="text-[10px] text-emerald-400/70">Out: <span className="font-mono">${r.priceOutputPer1M}/1M</span></span>}
                     </div>
                   )}
                 </div>

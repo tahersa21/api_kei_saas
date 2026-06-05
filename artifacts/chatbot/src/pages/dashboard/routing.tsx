@@ -24,6 +24,8 @@ type RoutingRule = {
   description: string | null;
   isActive: boolean;
   providers: RoutingProviderEntry[];
+  priceInputPer1M: number | null;
+  priceOutputPer1M: number | null;
   createdAt: string;
 };
 
@@ -258,13 +260,15 @@ function RuleEditor({
   rule: Partial<RoutingRule> & { providers: RoutingProviderEntry[] };
   customProviders: CustomProvider[];
   adminToken: string | null;
-  onSave: (data: { name: string; description: string; providers: RoutingProviderEntry[]; isActive: boolean }) => Promise<void>;
+  onSave: (data: { name: string; description: string; providers: RoutingProviderEntry[]; isActive: boolean; priceInputPer1M: number | null; priceOutputPer1M: number | null }) => Promise<void>;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(rule.name ?? "");
   const [description, setDescription] = useState(rule.description ?? "");
   const [providers, setProviders] = useState<RoutingProviderEntry[]>(rule.providers);
   const [isActive, setIsActive] = useState(rule.isActive ?? true);
+  const [priceIn, setPriceIn] = useState(rule.priceInputPer1M != null ? String(rule.priceInputPer1M) : "");
+  const [priceOut, setPriceOut] = useState(rule.priceOutputPer1M != null ? String(rule.priceOutputPer1M) : "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
@@ -274,7 +278,11 @@ function RuleEditor({
   const handleSave = async () => {
     if (!name.trim()) { setErr("Name is required"); return; }
     setSaving(true); setErr("");
-    try { await onSave({ name: name.trim(), description, providers, isActive }); }
+    const inp = parseFloat(priceIn);
+    const out = parseFloat(priceOut);
+    const priceInputPer1M = !isNaN(inp) && priceIn !== "" ? inp : null;
+    const priceOutputPer1M = !isNaN(out) && priceOut !== "" ? out : null;
+    try { await onSave({ name: name.trim(), description, providers, isActive, priceInputPer1M, priceOutputPer1M }); }
     catch (e) { setErr(String(e)); }
     finally { setSaving(false); }
   };
@@ -304,6 +312,19 @@ function RuleEditor({
             ? <ToggleRight className="w-6 h-6 text-emerald-500" />
             : <ToggleLeft className="w-6 h-6 text-muted-foreground/40" />}
         </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <label className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">Input Price ($/1M tokens)</label>
+          <Input type="number" value={priceIn} onChange={e => setPriceIn(e.target.value)}
+            placeholder="e.g. 2.50" className="h-8 text-sm bg-background/60" step="0.01" min="0" />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">Output Price ($/1M tokens)</label>
+          <Input type="number" value={priceOut} onChange={e => setPriceOut(e.target.value)}
+            placeholder="e.g. 10.00" className="h-8 text-sm bg-background/60" step="0.01" min="0" />
+        </div>
       </div>
 
       <div className="space-y-2">
@@ -405,7 +426,7 @@ export default function RoutingPage() {
     await load();
   };
 
-  const saveNew = async (data: { name: string; description: string; providers: RoutingProviderEntry[]; isActive: boolean }) => {
+  const saveNew = async (data: { name: string; description: string; providers: RoutingProviderEntry[]; isActive: boolean; priceInputPer1M: number | null; priceOutputPer1M: number | null }) => {
     const r = await adminFetch("/api/admin/routing-rules", {
       method: "POST", body: JSON.stringify(data),
     });
@@ -413,7 +434,7 @@ export default function RoutingPage() {
     setCreating(false); await load();
   };
 
-  const saveEdit = async (id: string, data: { name: string; description: string; providers: RoutingProviderEntry[]; isActive: boolean }) => {
+  const saveEdit = async (id: string, data: { name: string; description: string; providers: RoutingProviderEntry[]; isActive: boolean; priceInputPer1M: number | null; priceOutputPer1M: number | null }) => {
     const r = await adminFetch(`/api/admin/routing-rules/${id}`, {
       method: "PATCH", body: JSON.stringify(data),
     });

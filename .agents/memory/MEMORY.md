@@ -1,3 +1,4 @@
 - [CommandCode project structure](commandcode-project.md) — Full chatbot + API console; chatbot at `/`, API at `/api`, DB required for user_keys/request_logs/providers/routing_rules tables.
 - [Smart Routing only](smart-routing-only.md) — CC Keys and RC Keys completely removed; ALL requests route through Smart Routing engine; no more key pools.
 - [Console page architecture](console-architecture.md) — `/` is now the API Console (not the chatbot); chatbot moved to `/chat`; sendMessage takes 5 positional args not an object
+- [Credits and pricing system](credits-pricing.md) — 1 credit = $0.01; prices set per routing rule (priceInputPer1M / priceOutputPer1M, USD/1M tokens); cost auto-deducted after each request; stored in request_logs.cost_credits

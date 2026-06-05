@@ -13,6 +13,9 @@ export type ResolvedRoute = {
   /** Populated for custom providers when a specific key was stored in the routing entry */
   apiKey?: string;
   apiBaseUrl?: string;
+  /** Pricing set on the routing rule (USD per 1M tokens). Null = free/unset */
+  priceInputPer1M?: number | null;
+  priceOutputPer1M?: number | null;
 };
 
 type RouteAttemptResult =
@@ -84,6 +87,8 @@ export async function resolveRoute(ruleName: string): Promise<RouteAttemptResult
           rpmLimit: entry.rpmLimit,
           apiKey: entry.apiKey,
           apiBaseUrl: entry.apiBaseUrl,
+          priceInputPer1M: rule.priceInputPer1M ?? null,
+          priceOutputPer1M: rule.priceOutputPer1M ?? null,
         },
       };
     }

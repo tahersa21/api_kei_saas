@@ -12,6 +12,7 @@ export const requestLogsTable = pgTable("request_logs", {
   errorMsg: text("error_msg"),
   tokensIn: integer("tokens_in"),
   tokensOut: integer("tokens_out"),
+  costCredits: integer("cost_credits"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

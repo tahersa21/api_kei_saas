@@ -105,7 +105,7 @@ router.get("/user/stats", async (req, res) => {
   const { start, end } = dateRange(req.query.range as string | undefined);
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
 
-  const [totalRes, rangeRes, todayRes, totalTokensRes, todayTokensRes, topModels, recentLogs] = await Promise.all([
+  const [totalRes, rangeRes, todayRes, totalTokensRes, todayTokensRes, totalCostRes, todayCostRes, topModels, recentLogs] = await Promise.all([
     db.select({ c: count() }).from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds)),
     db.select({ c: count() }).from(requestLogsTable).where(
       and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, start), lte(requestLogsTable.createdAt, end))
@@ -116,6 +116,10 @@ router.get("/user/stats", async (req, res) => {
     db.select({ t: sql<number>`coalesce(sum(coalesce(${requestLogsTable.tokensIn},0) + coalesce(${requestLogsTable.tokensOut},0)),0)` })
       .from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds)),
     db.select({ t: sql<number>`coalesce(sum(coalesce(${requestLogsTable.tokensIn},0) + coalesce(${requestLogsTable.tokensOut},0)),0)` })
+      .from(requestLogsTable).where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, todayStart))),
+    db.select({ t: sql<number>`coalesce(sum(coalesce(${requestLogsTable.costCredits},0)),0)` })
+      .from(requestLogsTable).where(inArray(requestLogsTable.userKeyId, keyIds)),
+    db.select({ t: sql<number>`coalesce(sum(coalesce(${requestLogsTable.costCredits},0)),0)` })
       .from(requestLogsTable).where(and(inArray(requestLogsTable.userKeyId, keyIds), gte(requestLogsTable.createdAt, todayStart))),
     db.select({ model: requestLogsTable.model, c: count() })
       .from(requestLogsTable)
@@ -136,6 +140,8 @@ router.get("/user/stats", async (req, res) => {
     todayRequests: Number(todayRes[0]?.c ?? 0),
     totalTokens: Number(totalTokensRes[0]?.t ?? 0),
     todayTokens: Number(todayTokensRes[0]?.t ?? 0),
+    totalCostCredits: Number(totalCostRes[0]?.t ?? 0),
+    todayCostCredits: Number(todayCostRes[0]?.t ?? 0),
     topModels: topModels.map(r => ({ model: r.model, count: Number(r.c) })),
     recentLogs,
   });
@@ -167,7 +173,7 @@ router.get("/user/logs", async (req, res) => {
 
   const [totalRes, rows] = await Promise.all([
     db.select({ c: count() }).from(requestLogsTable).where(and(...conditions)),
-    db.select({ id: requestLogsTable.id, model: requestLogsTable.model, status: requestLogsTable.status, elapsedMs: requestLogsTable.elapsedMs, createdAt: requestLogsTable.createdAt })
+    db.select({ id: requestLogsTable.id, model: requestLogsTable.model, status: requestLogsTable.status, elapsedMs: requestLogsTable.elapsedMs, tokensIn: requestLogsTable.tokensIn, tokensOut: requestLogsTable.tokensOut, costCredits: requestLogsTable.costCredits, createdAt: requestLogsTable.createdAt })
       .from(requestLogsTable).where(and(...conditions)).orderBy(desc(requestLogsTable.createdAt)).limit(pageSize).offset((page - 1) * pageSize),
   ]);
 

@@ -1,4 +1,4 @@
-import { pgTable, text, boolean, jsonb, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, boolean, jsonb, timestamp, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -20,6 +20,8 @@ export const routingRulesTable = pgTable("routing_rules", {
   description: text("description"),
   isActive: boolean("is_active").notNull().default(true),
   providers: jsonb("providers").$type<RoutingProviderEntry[]>().notNull().default([]),
+  priceInputPer1M: real("price_input_per1m"),   // USD per 1M input tokens (null = free/unset)
+  priceOutputPer1M: real("price_output_per1m"),  // USD per 1M output tokens (null = free/unset)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

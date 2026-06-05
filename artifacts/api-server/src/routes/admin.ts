@@ -544,11 +544,13 @@ router.get("/admin/routing-rules", async (_req, res) => {
 });
 
 router.post("/admin/routing-rules", async (req, res) => {
-  const { name, description, providers, isActive } = req.body as {
+  const { name, description, providers, isActive, priceInputPer1M, priceOutputPer1M } = req.body as {
     name?: string;
     description?: string;
     providers?: RoutingProviderEntry[];
     isActive?: boolean;
+    priceInputPer1M?: number | null;
+    priceOutputPer1M?: number | null;
   };
   if (!name?.trim()) {
     res.status(400).json({ error: "name is required" });
@@ -563,23 +565,29 @@ router.post("/admin/routing-rules", async (req, res) => {
       description: description?.trim() ?? null,
       providers: (providers ?? []).map((p, i) => ({ ...p, priority: p.priority ?? i })),
       isActive: isActive ?? true,
+      priceInputPer1M: priceInputPer1M ?? null,
+      priceOutputPer1M: priceOutputPer1M ?? null,
     })
     .returning();
   res.json({ rule: created });
 });
 
 router.patch("/admin/routing-rules/:id", async (req, res) => {
-  const { name, description, providers, isActive } = req.body as {
+  const { name, description, providers, isActive, priceInputPer1M, priceOutputPer1M } = req.body as {
     name?: string;
     description?: string;
     providers?: RoutingProviderEntry[];
     isActive?: boolean;
+    priceInputPer1M?: number | null;
+    priceOutputPer1M?: number | null;
   };
   const updates: Record<string, unknown> = {};
   if (name !== undefined) updates.name = name.trim();
   if (description !== undefined) updates.description = description.trim() || null;
   if (providers !== undefined) updates.providers = providers;
   if (isActive !== undefined) updates.isActive = isActive;
+  if (priceInputPer1M !== undefined) updates.priceInputPer1M = priceInputPer1M;
+  if (priceOutputPer1M !== undefined) updates.priceOutputPer1M = priceOutputPer1M;
   await db.update(routingRulesTable).set(updates).where(eq(routingRulesTable.id, req.params.id));
   res.json({ ok: true });
 });
