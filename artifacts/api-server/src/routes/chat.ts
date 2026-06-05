@@ -5,7 +5,7 @@ import { db, userKeysTable, requestLogsTable, providersTable, routingRulesTable 
 import type { RoutingProviderEntry } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { isRoutingModel, extractRuleName, resolveRoute, resolveNextRoute, penalizeRateLimit } from "../lib/routing-engine";
-import { adjustUserCredit } from "../lib/settings";
+import { adjustUserCredit, getSettings } from "../lib/settings";
 
 const router = Router();
 
@@ -154,17 +154,24 @@ router.get("/chat/rc-models", (_req, res) => res.json({ models: [] }));
 // All traffic is now routed through Smart Routing rules configured in admin panel.
 router.get("/chat/models-catalog", async (_req, res) => {
   const rules = await db.select().from(routingRulesTable).where(eq(routingRulesTable.isActive, true));
-  const routing = rules.map(r => ({
-    id: r.id,
-    name: r.name,
-    description: r.description,
-    providers: (r.providers as RoutingProviderEntry[]).map(p => ({
-      type: p.providerType,
-      modelId: p.modelId,
-    })),
-    priceInputPer1M: r.priceInputPer1M ?? null,
-    priceOutputPer1M: r.priceOutputPer1M ?? null,
-  }));
+  const { modelOverrides } = getSettings();
+  const routing = rules.map(r => {
+    const modelId = `route:${r.name}`;
+    const overridePrice = modelOverrides[modelId]?.price;
+    const priceIn = r.priceInputPer1M ?? overridePrice?.input ?? null;
+    const priceOut = r.priceOutputPer1M ?? overridePrice?.output ?? null;
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      providers: (r.providers as RoutingProviderEntry[]).map(p => ({
+        type: p.providerType,
+        modelId: p.modelId,
+      })),
+      priceInputPer1M: priceIn,
+      priceOutputPer1M: priceOut,
+    };
+  });
   res.json({ cc: [], rc: [], routing });
 });
 
@@ -341,10 +348,14 @@ async function handleCodexResponses(req: import("express").Request, res: import(
 
   const logRequest = (status: "ok" | "error", tokensIn = 0, tokensOut = 0, errorMsg?: string) => {
     const elapsedMs = Date.now() - startTime;
-    const { priceInputPer1M, priceOutputPer1M } = routeResult.route;
+    // Pricing: routing rule takes priority, falls back to modelOverrides (set via admin Models page)
+    const { priceInputPer1M: ruleIn, priceOutputPer1M: ruleOut } = routeResult.route;
+    const overridePrice = getSettings().modelOverrides[requestedModel]?.price;
+    const priceIn = ruleIn ?? overridePrice?.input ?? null;
+    const priceOut = ruleOut ?? overridePrice?.output ?? null;
     let costCredits: number | null = null;
-    if (status === "ok" && (tokensIn || tokensOut) && priceInputPer1M != null && priceOutputPer1M != null) {
-      const costUsd = (tokensIn * priceInputPer1M + tokensOut * priceOutputPer1M) / 1_000_000;
+    if (status === "ok" && (tokensIn || tokensOut) && priceIn != null && priceOut != null) {
+      const costUsd = (tokensIn * priceIn + tokensOut * priceOut) / 1_000_000;
       costCredits = Math.round(costUsd * 100); // 1 credit = $0.01
     }
     const ops: Promise<unknown>[] = [
