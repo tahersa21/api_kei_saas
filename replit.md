@@ -1,55 +1,60 @@
 # CommandCode API Gateway
 
-A full-stack AI proxy platform with dual-provider support: **CommandCode** (CC) and **Right Code** (RC — right.codes). Supports real-time streaming responses with 12+ CC models and 58+ RC models across 7 channels. Supports image/vision attachments for all providers. Users self-register via Clerk and create their own API keys from a personal dashboard.
+منصة AI proxy كاملة بدعم مزودَين: **CommandCode** (CC) و**Right Code** (RC — right.codes). تدعم streaming فوري، 12+ نموذج CC و58+ نموذج RC عبر 7 قنوات. دعم الصور/Vision لجميع المزودين. المستخدمون يسجلون عبر Clerk ويديرون مفاتيحهم من لوحة تحكم خاصة. يشمل **Smart Routing** لتوجيه النماذج ديناميكياً مع fallback تلقائي وتتبع RPM.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 8080)
-- `pnpm --filter @workspace/chatbot run dev` — run the frontend (port 22967)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
+- `pnpm --filter @workspace/api-server run dev` — تشغيل API server (port 8080)
+- `pnpm --filter @workspace/chatbot run dev` — تشغيل الـ frontend (port 22967)
+- `pnpm --filter @workspace/db run push` — تطبيق schema قاعدة البيانات
+- `pnpm run typecheck` — فحص TypeScript لكل الحزم
+- `pnpm run build` — بناء كل شيء
+- `pnpm --filter @workspace/api-spec run codegen` — إعادة توليد API hooks و Zod schemas
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5 (proxy server to CommandCode + Right Code)
+- pnpm workspaces، Node.js 24، TypeScript 5.9
+- API: Express 5 (proxy server → CC + RC)
 - Frontend: React + Vite + Tailwind CSS + shadcn/ui
+- Auth: Clerk (مستخدمون) + JWT (أدمن)
+- DB: PostgreSQL + Drizzle ORM
 - Routing: wouter
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Build: esbuild (ESM bundle)
 
 ## Where things live
 
-- `lib/api-spec/openapi.yaml` — API contract (source of truth)
-- `lib/db/src/schema/` — Drizzle DB schemas (providers, cc_keys, rc_keys, user_keys, request_logs, routing_rules)
-- `artifacts/api-server/src/routes/chat.ts` — CC + RC proxy routes (streaming SSE), vision builders
-- `artifacts/api-server/src/routes/admin.ts` — Admin CRUD: CC keys, RC keys, user keys, providers, logs, overview, routing rules
-- `artifacts/api-server/src/routes/user.ts` — User self-service: key CRUD (Clerk-authed), stats, logs
-- `artifacts/api-server/src/app.ts` — Express app setup (body parser limit: 25MB)
-- `artifacts/chatbot/src/pages/landing.tsx` — Landing page (`/`, public)
-- `artifacts/chatbot/src/pages/user-dashboard.tsx` — **User dashboard** (`/app`, Clerk-protected): 9-page self-service portal
-- `artifacts/chatbot/src/pages/console.tsx` — Admin API Console (`/taherlt`, password-only)
+- `lib/api-spec/openapi.yaml` — عقد الـ API (source of truth)
+- `lib/db/src/schema/` — Drizzle schemas (providers, cc_keys, rc_keys, user_keys, request_logs, routing_rules)
+- `artifacts/api-server/src/routes/chat.ts` — CC + RC proxy routes، vision builders، Claude Code proxy، Codex proxy
+- `artifacts/api-server/src/routes/admin.ts` — Admin CRUD: CC keys، RC keys، user keys، providers، logs، routing rules
+- `artifacts/api-server/src/routes/user.ts` — User self-service: key CRUD (Clerk-authed)، stats، logs
+- `artifacts/api-server/src/lib/routing-engine.ts` — Smart Routing: exact/contains/default matching، rate-limit fallback
+- `artifacts/api-server/src/lib/settings.ts` — modelOverrides، adjustUserCredit، getSettings
+- `artifacts/api-server/src/lib/user-rate-limiter.ts` — checkUserRpm، getUserRpmUsage per user key
+- `artifacts/api-server/src/app.ts` — Express setup، static file serving (production)
+- `artifacts/chatbot/src/pages/landing.tsx` — Landing page (`/`، public)
+- `artifacts/chatbot/src/pages/user-dashboard.tsx` — **User dashboard** (`/app`، Clerk-protected): 9 pages
+- `artifacts/chatbot/src/pages/console.tsx` — Admin API Console (`/taherlt`، password-only)
 - `artifacts/chatbot/src/pages/chat.tsx` — Full chatbot UI (`/chat`)
-- `artifacts/chatbot/src/pages/dashboard/` — Admin stats dashboard (`/dashboard`, password-only)
-- `artifacts/chatbot/src/hooks/use-chat-stream.ts` — SSE streaming hook, ImageAttachment type
-- `artifacts/chatbot/src/hooks/use-rightcode-key.ts` — RC key localStorage hook
-- `artifacts/chatbot/src/hooks/use-rc-pool-status.ts` — RC server pool status hook
+- `artifacts/chatbot/src/pages/dashboard/` — Admin stats dashboard (`/dashboard`، password-only)
+- `artifacts/chatbot/src/pages/dashboard/routing.tsx` — Smart Routing rule editor
+- `artifacts/chatbot/src/pages/dashboard/providers.tsx` — Custom providers manager
+- `artifacts/chatbot/src/hooks/use-chat-stream.ts` — SSE streaming hook، ImageAttachment type
 - `artifacts/chatbot/src/context/admin-auth.tsx` — Admin JWT auth context + `useAdminFetch` hook
 
 ## Architecture decisions
 
-- Backend proxy pattern: API keys stored server-side, never exposed to browser
+- Backend proxy: API keys server-side، never exposed to browser
 - CommandCode requires custom headers (x-command-code-*) with OS/arch/UUIDs — generated per-request
-- Streaming via SSE (Server-Sent Events): frontend uses raw fetch() with ReadableStream
-- CC model list: dynamic from `https://api.commandcode.ai/provider/v1/models`, cached 10 min server-side
-- RC model list: dynamic from `https://right.codes/models/public` (public, no auth), cached 10 min server-side
-- System prompt is separate from messages array (CC API requirement)
-- Body parser limit: 25MB (to accommodate base64-encoded image attachments)
-- TCP Nagle disabled on SSE connections (`socket.setNoDelay(true)`) for immediate chunk delivery
-- Elapsed time timer measures API response time only (stops when last token arrives, before typewriter animation)
-- Admin auth: JWT token in localStorage (`cc_admin_token`), issued by `POST /api/admin/login`
-- RC pool status: `GET /api/chat/rc-pool-status` — returns `{ active: number }` — frontend maps `active > 0` → `hasPoolKeys`
+- Streaming via SSE: frontend uses raw `fetch()` + `ReadableStream`
+- CC model list: dynamic from `https://api.commandcode.ai/provider/v1/models`، cached 10 min server-side
+- RC model list: dynamic from `https://right.codes/models/public` (public، no auth)، cached 10 min
+- Body parser limit: 25MB (base64 image attachments)
+- TCP Nagle disabled on SSE (`socket.setNoDelay(true)`) for immediate chunk delivery
+- Admin auth: JWT in localStorage (`cc_admin_token`)، issued by `POST /api/admin/login`
+- Cost calc: `modelOverrides` lookup tries both `requestedModel` AND `route:${requestedModel}` keys
+- Smart Routing: routing rule providers are tried in priority order; rate-limited providers are skipped
+- Credits: 1 credit = $0.01 USD; `adjustUserCredit()` in settings.ts handles deduction
 
 ## Product
 
@@ -57,63 +62,58 @@ A full-stack AI proxy platform with dual-provider support: **CommandCode** (CC) 
 
 | Route | Access | Purpose |
 |---|---|---|
-| `/` | Public | Landing page (signed-in → redirects to `/app`) |
+| `/` | Public | Landing page |
 | `/sign-in`, `/sign-up` | Public | Clerk auth pages |
-| `/app` | Clerk login required | **User dashboard** — self-service API key management |
+| `/app` | Clerk login | User dashboard — self-service API key management |
 | `/chat` | Public | Full chatbot UI (CC + RC streaming) |
 | `/taherlt` | `ADMIN_PASSWORD` | Secret admin API console |
-| `/dashboard` | `ADMIN_PASSWORD` | Admin stats, CC/RC key pools, logs |
+| `/dashboard` | `ADMIN_PASSWORD` | Admin stats، CC/RC key pools، logs، routing |
 
-### User Dashboard (`/app`) — Self-service portal
-- Protected by Clerk auth; signed-out users redirected to `/sign-in`
-- **Home** — 8 stat cards (today's requests, total, tokens, keys) + announcements
-- **Dashboard** — range filter + 4 stat cards + rate limits + charts (Pie + Bar)
+### User Dashboard (`/app`)
+- Protected by Clerk; signed-out → redirect to `/sign-in`
+- **Home** — 8 stat cards + announcements
+- **Dashboard** — range filter + 4 stat cards + rate limits + charts
 - **Usage Logs** — paginated table with date/model/status filters
-- **API Keys** — create up to 5 `sk-cc-*` keys; full key shown once in modal; toggle/delete
-- **Models** — all available CC + RC models listed by channel
+- **API Keys** — create up to 5 `sk-cc-*` keys; full key shown once; toggle/delete
+- **Models** — all CC + RC models by channel
 - **Subscribe** — balance top-up + package plans
 - **Invite & Earn** — referral code + link
 - **Contact** — support links
+- **Claude Code** — instructions + config with user's own sk-cc-* key
+- **Codex CLI** — instructions + config
 
-### Admin API Console (`/taherlt`) — Secret URL
-- 3-column layout: sidebar nav | main content | compact test chat panel
-- Password-only auth (no email); JWT stored in localStorage
-- Manages: Providers, API Keys (issue to users), CC Keys pool, RC Keys pool
-
-### Chatbot (`/chat`) — Full chat UI
-- Real-time AI chat with streaming responses
-- **[CC] / [RC] provider toggle** in header
-- **CC mode**: 12+ open-source models (DeepSeek, GLM, Kimi, Qwen, etc.)
-- **RC mode**: 58 models across 7 channels (GPT-5.x Codex, Claude, Gemini, DeepSeek)
-- Model selector grouped by channel/family
-- Collapsible system prompt configuration
-- RTL support for Arabic text
-- Stop streaming mid-response
-- **Image/media upload** — paperclip button; client-side compression before upload
+### Admin API Console (`/taherlt`)
+- 3-column: sidebar nav | main content | compact test chat
+- Password-only auth; JWT in localStorage
+- Manages: Providers، API Keys، CC Keys pool، RC Keys pool
 
 ### Admin Dashboard (`/dashboard`)
-- Login protected with `ADMIN_PASSWORD` env var (same JWT as console)
-- **Overview** — requests today/week/total, active keys, top models chart
-- **CC Keys** — add/remove/test/enable CommandCode API keys (pool)
-- **RC Keys** — add/remove Right Code API keys (pool)
-- **User Keys** — view all user keys; "self-created" badge for Clerk-registered users
-- **Logs** — full paginated request log with status/duration/key labels
+- Login with `ADMIN_PASSWORD`
+- **Overview** — requests today/week/total، active keys، top models
+- **CC Keys** — add/remove/test/enable CC keys
+- **RC Keys** — add/remove RC keys
+- **User Keys** — view all user keys; "self-created" badge
+- **Logs** — full paginated request log
+- **Smart Routing** — create/edit/delete routing rules with provider chain + inline API key/URL
 
-## User preferences
-
-- User uses Arabic; app supports Arabic text input with RTL detection
-
-## Architecture (dual-provider)
+## Architecture (dual-provider + Smart Routing)
 
 ```
 User (Clerk)  → /app  → GET /api/user/keys (create/manage own sk-cc-* keys)
 User          → X-Api-Key: sk-cc-* → POST /api/chat/stream → CC or RC upstream
 [CC mode]     → Round-Robin CC Key Pool → CommandCode API
 [RC mode]     → right.codes/{channel}/v1/...
-Admin         → ADMIN_PASSWORD → /taherlt (console) + /dashboard (stats)
+
+Claude Code   → ANTHROPIC_BASE_URL=/api/proxy/claude → /api/proxy/claude/v1/messages
+                → Smart Routing (claude-opus-4-8 rule) → upstream Anthropic/RC
+
+Codex CLI     → OPENAI_BASE_URL=/api/proxy/codex → /api/proxy/codex/v1/*
+                → Smart Routing (gpt-5.x rules) → upstream OpenAI/RC
+
+Admin         → ADMIN_PASSWORD → /taherlt (console) + /dashboard (stats + routing)
 ```
 
-### Right Code channels & routing
+### Right Code channels
 
 | Channel prefix | API type | Endpoint |
 |---|---|---|
@@ -125,19 +125,28 @@ Admin         → ADMIN_PASSWORD → /taherlt (console) + /dashboard (stats)
 | `/deepseek/anthropic` | Anthropic messages | `right.codes/deepseek/anthropic/v1/messages` |
 | `/gemini` | Gemini native | `right.codes/gemini/rbeta/models/{m}:streamGenerateContent` |
 
-RC model IDs are encoded as `rc:{prefix}|{modelName}` — e.g. `rc:/codex-pro|gpt-5.4`
+RC model IDs: `rc:{prefix}|{modelName}` — e.g. `rc:/codex-pro|gpt-5.4`
+
+### Smart Routing
+
+- قواعد توجيه في DB (`routing_rules` table) — محفوظة كـ JSONB
+- كل قاعدة: اسم، قائمة مزودين (priority)، سعر input/output per 1M tokens
+- Matching: exact name → partial (contains) → `_default` fallback
+- Provider types: `cc` (CC pool)، `rc` (RC pool)، `custom` (inline API key + base URL)
+- RPM per provider: إذا تجاوز الحد يُتخطى إلى التالي
+- الـ API key في القاعدة يأتي من: localStorage pool keys (provider مُختار) أو حقل مباشر (custom بدون provider)
 
 ### CC key pool
-- User sends `X-Api-Key: sk-cc-<hex>` → validated against `user_keys` DB table
-- Server picks next CC key via round-robin from `cc_keys` table (active + valid)
-- Each request logged to `request_logs` with elapsed time, model, user key, CC key
-- If CC key returns 401/403 it's auto-marked invalid
-- Falls back to env `COMMANDCODE_API_KEY` if no DB keys configured
+- User → `X-Api-Key: sk-cc-<hex>` → validated against `user_keys` DB
+- Server picks CC key round-robin from `cc_keys` (active + valid)
+- Each request logged to `request_logs`
+- If CC key returns 401/403 → auto-marked invalid
+- Fallback: env `COMMANDCODE_API_KEY`
 
 ### RC key pool
-- RC keys stored in `rc_keys` DB table (active/inactive)
-- `GET /api/chat/rc-pool-status` returns `{ active: number }` — frontend converts `active > 0` to `hasPoolKeys` to show "server key active"
-- User can also supply their own RC key via settings (stored in localStorage)
+- RC keys in `rc_keys` DB (active/inactive)
+- `GET /api/chat/rc-pool-status` → `{ active: number }`
+- User can also supply own RC key (localStorage)
 
 ## Database schema
 
@@ -146,102 +155,95 @@ RC model IDs are encoded as `rc:{prefix}|{modelName}` — e.g. `rc:/codex-pro|gp
 | `cc_keys` | CommandCode API key pool (round-robin) |
 | `rc_keys` | Right Code API key pool |
 | `user_keys` | `sk-cc-*` keys — user self-created (has `clerk_user_id`) or admin-issued |
-| `request_logs` | All chat requests (model, elapsed, key used, status) |
-| `providers` | Custom AI providers (name, slug, type, baseUrl, authMethod, channels, notes) |
-| `routing_rules` | Dynamic routing rules for model/provider selection |
-
-`providers.type` values: `text` | `video` | `audio`
+| `request_logs` | All chat requests (model، elapsed، key، status، cost) |
+| `providers` | Custom AI providers (name، slug، type، baseUrl، authMethod، channels) |
+| `routing_rules` | Dynamic routing rules (providers JSONB، prices، isActive) |
 
 ## Image / Vision Support
 
-Images are attached via the paperclip button. Before sending, they are **compressed client-side** (canvas resize + JPEG re-encode) to reduce payload size:
+Client-side compression before upload:
 
 | Parameter | Value |
 |---|---|
 | Max dimensions | 1024 × 1024 px |
 | Output format | JPEG |
 | JPEG quality | 82% |
-| Typical size reduction | ~2MB → ~150KB |
 
-The server converts image data to the correct format per provider:
-
-| Provider / API type | Vision format |
+| Provider | Vision format |
 |---|---|
-| Anthropic (`/claude`, `/claude-aws`, `/deepseek/anthropic`) | `source: { type: "base64", media_type, data }` |
-| OpenAI completions (`/codex-pro`, `/deepseek`) | `image_url: { url: "data:…;base64,…" }` |
-| OpenAI responses (`/codex`) | `image_url: { url: "data:…;base64,…" }` |
-| Gemini (`/gemini`) | `inlineData: { mimeType, data }` |
+| Anthropic (`/claude`، `/claude-aws`) | `source: { type: "base64", media_type, data }` |
+| OpenAI completions | `image_url: { url: "data:…;base64,…" }` |
+| OpenAI responses | `image_url: { url: "data:…;base64,…" }` |
+| Gemini | `inlineData: { mimeType, data }` |
 
-Wire format in the request body: each message may carry `images?: { data: string, mimeType: string }[]` (base64 without data-URL prefix).
+## Proxy Endpoints
+
+| Endpoint | Tool | Config |
+|---|---|---|
+| `POST /api/proxy/claude/v1/messages` | Claude Code | `ANTHROPIC_BASE_URL=.../api/proxy/claude` |
+| `GET  /api/proxy/claude/v1/models` | Claude Code | يُرجع نماذج claude-opus-4-8، claude-opus-4-5... |
+| `POST /api/proxy/codex/v1/chat/completions` | Codex CLI (completions) | `OPENAI_BASE_URL=.../api/proxy/codex` |
+| `POST /api/proxy/codex/v1/responses` | Codex CLI (responses) | `OPENAI_BASE_URL=.../api/proxy/codex` |
+| `GET  /api/proxy/codex/v1/models` | Codex CLI | يُرجع قائمة نماذج GPT |
+| `GET  /api/healthz` | Health check | `{"status":"ok"}` |
 
 ## Gotchas
 
-- CC model IDs are **case-sensitive** — must match exactly as returned by `/provider/v1/models`
-- Non-deepseek CC models require the `x-oss-primary-provider` header set to the org prefix
-- `/provider/v1/chat/completions` requires Pro plan; only `/alpha/generate` works on individual-go
-- RC `/codex` channel only supports `/v1/responses` format — NOT compatible with `/v1/chat/completions`
-- RC `/v1/models` returns 404 — correct endpoint is `/models/public` (public, no auth needed)
-- NDJSON stream format for CC: `{"type":"text-delta","text":"..."}` for content, `{"type":"reasoning-delta"}` for thinking
-- RC `/claude` Official channel requires Claude Code CLI fingerprint headers (`user-agent: claude-code/1.9.7`, stainless SDK headers, `x-claude-code-disable-nonessential-traffic: 1`) — applied automatically server-side for the `/claude` prefix only
-- Image requests are inherently slower than text (model processes pixel data); use vision-capable models (Claude Sonnet/Opus, GPT-4o/5, Gemini Pro Vision)
-- SSE error format: errors arrive as `data: {"type":"error","error":"..."}` — frontend parses `chunk.error` (string or `{message}` object)
+- CC model IDs are **case-sensitive**
+- RC `/v1/models` returns 404 — correct endpoint: `/models/public`
+- RC `/codex` channel: `/v1/responses` format only (NOT `/v1/chat/completions`)
+- RC `/claude` requires Claude Code fingerprint headers — applied automatically server-side
+- Cost lookup: tries `requestedModel` then `route:${requestedModel}` in modelOverrides
+- `claude-opus-4-8` routing rule needs API Key + Base URL configured in Smart Routing
+- Streaming (SSE) requires Nginx `proxy_buffering off` in production
+- Body parser limit: 25MB — increase in `app.ts` if needed for larger images
+
+## Fixes Log (chronological)
+
+| الإصلاح | الملف |
+|---------|-------|
+| Cost calculation: فحص `route:X` + `X` في modelOverrides | `settings.ts` |
+| RPM counter: إضافة `checkUserRpm` لـ `handleCodexResponses` | `chat.ts` |
+| CustomProviderKeyPanel: دعم مفاتيح متعددة + labels + model fetch + Base URL | `console.tsx` |
+| API key copy: `GET /api/user/keys` يُرجع `key` (full) + `maskedKey` | `user.ts`، `user-dashboard.tsx` |
+| Claude Code proxy: `/api/proxy/claude/v1/messages` handler كامل | `chat.ts` |
+| Routing Rule editor: حقول API Key + Base URL مباشرة (custom بدون provider) | `routing.tsx` |
+| Static models list: إضافة `claude-opus-4-8` | `chat.ts` |
 
 ## Google Cloud Run Deployment
 
-The project ships with a production-ready `Dockerfile` and `cloudbuild.yaml`. A single container serves both the API and the frontend.
+See `DEPLOYMENT.md` for full VPS + Cloud Run + manual deployment instructions.
 
-### Container architecture
-
-```
-/app/
-  dist/          ← esbuild bundle of the Express API server
-  public/        ← Vite-built React frontend (served as static files by Express)
-```
-
-### One-time GCP setup
+### One-time GCP setup (quick reference)
 
 ```bash
-# 1. Enable required APIs
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
   artifactregistry.googleapis.com secretmanager.googleapis.com
 
-# 2. Create Artifact Registry repo
 gcloud artifacts repositories create cloud-run-source-deploy \
   --repository-format=docker --location=me-central1
 
-# 3. Create secrets
-echo -n "VALUE" | gcloud secrets create commandcode-api-key --data-file=-
-echo -n "VALUE" | gcloud secrets create session-secret      --data-file=-
-echo -n "VALUE" | gcloud secrets create admin-password      --data-file=-
-echo -n "VALUE" | gcloud secrets create database-url        --data-file=-
+# Create secrets
+echo -n "VALUE" | gcloud secrets create database-url           --data-file=-
+echo -n "VALUE" | gcloud secrets create admin-password         --data-file=-
+echo -n "VALUE" | gcloud secrets create session-secret         --data-file=-
+echo -n "VALUE" | gcloud secrets create clerk-publishable-key  --data-file=-
+echo -n "VALUE" | gcloud secrets create clerk-secret-key       --data-file=-
 
-# 4. Grant Cloud Build access to secrets
+# Grant Cloud Build access
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:$PROJECT_NUMBER@cloudbuild.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 ```
 
-### Deploy manually
+### Manual deploy
 
 ```bash
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions _SERVICE_NAME=commandcode-chatbot,_REGION=me-central1
+  --substitutions _SERVICE_NAME=commandcode,_REGION=me-central1
 ```
 
-### Automatic CI/CD (GitHub trigger)
+## User preferences
 
-Create a Cloud Build trigger pointing to `tahersa21/commandcode_api_key`, branch `main`, config file `cloudbuild.yaml`. Every push to `main` triggers a build + deploy automatically.
-
-### Environment variables required at runtime
-
-| Secret Manager key | Purpose |
-|---|---|
-| `commandcode-api-key` | CommandCode API key pool fallback |
-| `session-secret` | Express session signing key |
-| `admin-password` | Dashboard login password |
-| `database-url` | PostgreSQL connection string (Cloud SQL or external) |
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- User uses Arabic; app supports Arabic text input with RTL detection
