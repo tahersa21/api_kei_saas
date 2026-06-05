@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import {
   Plus, Trash2, Loader2, ToggleLeft, ToggleRight,
   RefreshCw, Globe, ChevronDown, ChevronUp, X,
-  Key, Eye, EyeOff, Copy, CheckCircle2, Search,
+  Key, Eye, EyeOff, Copy, CheckCircle2, Search, Pencil,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -358,6 +358,10 @@ export default function ProvidersPage() {
   const [notes, setNotes] = useState("");
   const [channels, setChannels] = useState<Channel[]>([{ ...EMPTY_CHANNEL }]);
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", baseUrl: "" });
+  const [editSaving, setEditSaving] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     const res = await apiFetch("/api/admin/providers");
@@ -409,6 +413,24 @@ export default function ProvidersPage() {
 
   const updateChannel = (i: number, field: keyof Channel, value: string) => {
     setChannels((prev) => prev.map((c, idx) => idx === i ? { ...c, [field]: value } : c));
+  };
+
+  const startEdit = (p: Provider) => {
+    setEditingId(p.id);
+    setEditForm({ name: p.name, baseUrl: p.baseUrl });
+    setExpanded((prev) => { const next = new Set(prev); next.delete(p.id); return next; });
+  };
+  const cancelEdit = () => setEditingId(null);
+  const saveEdit = async (id: string) => {
+    if (!editForm.name.trim() || !editForm.baseUrl.trim()) return;
+    setEditSaving(true);
+    await apiFetch(`/api/admin/providers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: editForm.name.trim(), baseUrl: editForm.baseUrl.trim() }),
+    });
+    setProviders((prev) => prev.map((p) => p.id === id ? { ...p, name: editForm.name.trim(), baseUrl: editForm.baseUrl.trim() } : p));
+    setEditingId(null);
+    setEditSaving(false);
   };
 
   return (
@@ -523,49 +545,74 @@ export default function ProvidersPage() {
         <div className="space-y-2">
           {providers.map((p) => {
             const isExpanded = expanded.has(p.id);
+            const isEditing = editingId === p.id;
             const savedKeyCount = loadPoolKeys(p.slug).length;
             return (
               <div key={p.id} className={`border rounded-lg transition-colors overflow-hidden
                 ${p.isActive ? "border-border/50 bg-card/30" : "border-border/30 bg-card/10 opacity-60"}`}>
-                {/* Provider row */}
-                <div className="flex items-center gap-3 p-3">
-                  <Globe className="w-4 h-4 text-muted-foreground/50 flex-none" />
 
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-medium">{p.name}</span>
-                      <span className="text-[9px] font-mono text-muted-foreground/50 bg-muted/20 px-1.5 py-0.5 rounded">{p.slug}</span>
-                      {!p.isActive && <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-muted/40 text-muted-foreground">disabled</span>}
-                      {savedKeyCount > 0 && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                          <Key className="w-2.5 h-2.5" />{savedKeyCount} key{savedKeyCount !== 1 ? "s" : ""}
-                        </span>
-                      )}
+                {/* Inline edit form */}
+                {isEditing ? (
+                  <div className="p-3 space-y-2">
+                    <p className="text-[9px] text-muted-foreground/50 uppercase tracking-widest">Edit Provider</p>
+                    <Input value={editForm.name}
+                      onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+                      className="h-7 text-xs bg-background/50" placeholder="Name" autoFocus />
+                    <Input value={editForm.baseUrl}
+                      onChange={e => setEditForm(f => ({ ...f, baseUrl: e.target.value }))}
+                      className="h-7 text-xs font-mono bg-background/50" placeholder="https://api.example.com" />
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={cancelEdit}>Cancel</Button>
+                      <Button size="sm" className="h-6 px-3 text-xs" onClick={() => saveEdit(p.id)} disabled={editSaving}>
+                        {editSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                      </Button>
                     </div>
-                    <div className="text-[10px] text-muted-foreground font-mono mt-0.5 truncate">{p.baseUrl}</div>
-                    {p.notes && <div className="text-[10px] text-muted-foreground/50 font-sans mt-0.5">{p.notes}</div>}
                   </div>
+                ) : (
+                  /* Provider row */
+                  <div className="flex items-center gap-3 p-3">
+                    <Globe className="w-4 h-4 text-muted-foreground/50 flex-none" />
 
-                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50 font-sans flex-none">
-                    <span>{p.channels.length} ch</span>
-                  </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-medium">{p.name}</span>
+                        <span className="text-[9px] font-mono text-muted-foreground/50 bg-muted/20 px-1.5 py-0.5 rounded">{p.slug}</span>
+                        {!p.isActive && <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-muted/40 text-muted-foreground">disabled</span>}
+                        {savedKeyCount > 0 && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                            <Key className="w-2.5 h-2.5" />{savedKeyCount} key{savedKeyCount !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono mt-0.5 truncate">{p.baseUrl}</div>
+                      {p.notes && <div className="text-[10px] text-muted-foreground/50 font-sans mt-0.5">{p.notes}</div>}
+                    </div>
 
-                  <div className="flex items-center gap-1.5 flex-none">
-                    <button onClick={() => toggleExpand(p.id)}
-                      className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors"
-                      title={isExpanded ? "Collapse" : "Expand — manage keys"}>
-                      {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </button>
-                    <button onClick={() => toggleActive(p.id, p.isActive)}
-                      className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors">
-                      {p.isActive ? <ToggleRight className="w-3.5 h-3.5 text-emerald-500" /> : <ToggleLeft className="w-3.5 h-3.5" />}
-                    </button>
-                    <button onClick={() => deleteProvider(p.id)}
-                      className="p-1.5 rounded text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50 font-sans flex-none">
+                      <span>{p.channels.length} ch</span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-none">
+                      <button onClick={() => toggleExpand(p.id)}
+                        className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors"
+                        title={isExpanded ? "Collapse" : "Expand — manage keys"}>
+                        {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      </button>
+                      <button onClick={() => startEdit(p)}
+                        className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors" title="Edit">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => toggleActive(p.id, p.isActive)}
+                        className="p-1.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-muted/20 transition-colors">
+                        {p.isActive ? <ToggleRight className="w-3.5 h-3.5 text-emerald-500" /> : <ToggleLeft className="w-3.5 h-3.5" />}
+                      </button>
+                      <button onClick={() => deleteProvider(p.id)}
+                        className="p-1.5 rounded text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Channels sub-section */}
                 {isExpanded && p.channels.length > 0 && (
