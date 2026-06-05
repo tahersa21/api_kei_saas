@@ -4,6 +4,7 @@ import {
   Home, LayoutDashboard, FileText, Key, Cpu, CreditCard, MessageSquare,
   Users, Phone, ChevronLeft, ChevronRight, RefreshCw, Copy, Check,
   Search, ExternalLink, Bell, Globe, Shield, Plus, Trash2, ToggleLeft, ToggleRight, Eye, EyeOff,
+  BookOpen, ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -690,6 +691,259 @@ function ContactPage() {
   );
 }
 
+// ── DOCS PAGE ─────────────────────────────────────────────────────────────────
+const BASE = window.location.origin;
+
+function CodeBlock({ code, lang = "bash" }: { code: string; lang?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="relative group">
+      <div className="flex items-center justify-between px-4 py-2 bg-white/[0.04] border border-white/[0.08] rounded-t-lg border-b-0">
+        <span className="text-[10px] text-white/30 font-mono uppercase tracking-widest">{lang}</span>
+        <button
+          onClick={() => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+          className="flex items-center gap-1.5 text-[10px] text-white/30 hover:text-white/70 transition-colors">
+          {copied ? <><Check className="w-3 h-3 text-green-400" /><span className="text-green-400">Copied!</span></>
+            : <><Copy className="w-3 h-3" /><span>Copy</span></>}
+        </button>
+      </div>
+      <pre className="bg-black/40 border border-white/[0.08] rounded-b-lg px-4 py-4 overflow-x-auto text-xs font-mono text-green-300 leading-relaxed">{code}</pre>
+    </div>
+  );
+}
+
+function DocSection({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-white/[0.03] transition-colors text-left">
+        <span className="text-sm font-semibold text-white">{title}</span>
+        <ChevronDown className={`w-4 h-4 text-white/30 transition-transform ${open ? "" : "-rotate-90"}`} />
+      </button>
+      {open && <div className="px-5 pb-5 space-y-4 border-t border-white/[0.06] pt-4">{children}</div>}
+    </div>
+  );
+}
+
+function DocsPage({ apiKey }: { apiKey: string }) {
+  const key = apiKey || "sk-cc-YOUR_API_KEY";
+  const streamUrl = `${BASE}/api/chat/stream`;
+  const modelsUrl = `${BASE}/api/chat/models`;
+  const rcModelsUrl = `${BASE}/api/chat/rc-models`;
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div>
+        <h1 className="text-lg font-bold text-white">API Documentation</h1>
+        <p className="text-xs text-white/40 mt-1">Everything you need to integrate CommandCode into your application.</p>
+      </div>
+
+      {/* Quick Start */}
+      <DocSection title="🚀 Quick Start">
+        <p className="text-xs text-white/50 leading-relaxed">
+          CommandCode provides an OpenAI-compatible chat streaming API. Send requests to <code className="text-[#f97316] font-mono">/api/chat/stream</code> with your API key in the <code className="text-[#f97316] font-mono">X-Api-Key</code> header.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          {[
+            { label: "Base URL", value: BASE, color: "text-blue-400" },
+            { label: "Chat Endpoint", value: "/api/chat/stream", color: "text-green-400" },
+            { label: "Auth Header", value: "X-Api-Key", color: "text-[#f97316]" },
+          ].map(item => (
+            <div key={item.label} className="bg-black/30 rounded-lg px-4 py-3 border border-white/[0.06]">
+              <p className="text-white/30 text-[10px] uppercase tracking-wider mb-1">{item.label}</p>
+              <code className={`font-mono ${item.color}`}>{item.value}</code>
+            </div>
+          ))}
+        </div>
+      </DocSection>
+
+      {/* Authentication */}
+      <DocSection title="🔑 Authentication">
+        <p className="text-xs text-white/50 leading-relaxed">
+          Pass your API key via the <code className="text-[#f97316] font-mono">X-Api-Key</code> header on every request.
+        </p>
+        <CodeBlock lang="bash" code={`curl ${streamUrl} \\
+  -H "X-Api-Key: ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "zai-org/GLM-5",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'`} />
+        <div className="bg-yellow-500/5 border border-yellow-500/15 rounded-lg px-4 py-3">
+          <p className="text-xs text-yellow-400/80">⚠ Keep your API key private. Never expose it in frontend code or public repositories.</p>
+        </div>
+      </DocSection>
+
+      {/* Model IDs */}
+      <DocSection title="🤖 Model IDs">
+        <p className="text-xs text-white/50 leading-relaxed">
+          Models are identified by a prefix that indicates the provider:
+        </p>
+        <div className="space-y-2">
+          {[
+            { prefix: "zai-org/GLM-5", desc: "CommandCode (CC) models — use the model ID directly", color: "text-blue-400", example: `"model": "zai-org/GLM-5"` },
+            { prefix: "rc:/channel|model", desc: "RightCode (RC) models — channel + model name", color: "text-purple-400", example: `"model": "rc:/codex-pro|gpt-5.4"` },
+            { prefix: "ag:model-id", desc: "AiGoCode (AG) models — prefix with ag:", color: "text-green-400", example: `"model": "ag:gpt-4o"` },
+          ].map(row => (
+            <div key={row.prefix} className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3 space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <code className={`font-mono text-xs ${row.color}`}>{row.prefix}</code>
+              </div>
+              <p className="text-xs text-white/40">{row.desc}</p>
+              <code className="text-[10px] text-white/25 font-mono">{row.example}</code>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-white/40">
+          Browse available models via <code className="text-[#f97316] font-mono">GET {modelsUrl}</code> (CC) or <code className="text-[#f97316] font-mono">GET {rcModelsUrl}</code> (RC).
+        </p>
+      </DocSection>
+
+      {/* Streaming Example */}
+      <DocSection title="⚡ Streaming (SSE)">
+        <p className="text-xs text-white/50 leading-relaxed">
+          The endpoint streams Server-Sent Events (SSE). Each chunk is a JSON object with a <code className="text-[#f97316] font-mono">text</code> delta. The stream ends with <code className="text-[#f97316] font-mono">[DONE]</code>.
+        </p>
+        <CodeBlock lang="javascript" code={`// Node.js / Browser — fetch with streaming
+const res = await fetch("${streamUrl}", {
+  method: "POST",
+  headers: {
+    "X-Api-Key": "${key}",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "zai-org/GLM-5",
+    messages: [{ role: "user", content: "Write a haiku about APIs." }],
+    stream: true,
+  }),
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  const lines = decoder.decode(value).split("\\n");
+  for (const line of lines) {
+    if (!line.startsWith("data: ")) continue;
+    const data = line.slice(6).trim();
+    if (data === "[DONE]") break;
+    const json = JSON.parse(data);
+    process.stdout.write(json.text ?? "");
+  }
+}`} />
+      </DocSection>
+
+      {/* Python example */}
+      <DocSection title="🐍 Python" defaultOpen={false}>
+        <CodeBlock lang="python" code={`import httpx, json
+
+API_KEY = "${key}"
+URL     = "${streamUrl}"
+
+payload = {
+    "model": "zai-org/GLM-5",
+    "messages": [{"role": "user", "content": "Explain async/await briefly."}],
+    "stream": True,
+}
+
+with httpx.stream(
+    "POST", URL,
+    headers={"X-Api-Key": API_KEY, "Content-Type": "application/json"},
+    json=payload,
+    timeout=60,
+) as r:
+    for line in r.iter_lines():
+        if not line.startswith("data: "):
+            continue
+        data = line[6:].strip()
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+        print(chunk.get("text", ""), end="", flush=True)`} />
+      </DocSection>
+
+      {/* OpenAI SDK compat */}
+      <DocSection title="🔧 OpenAI SDK (beta)" defaultOpen={false}>
+        <p className="text-xs text-white/50 leading-relaxed">
+          For CC models you can use the OpenAI Python/JS SDK by pointing <code className="text-[#f97316] font-mono">base_url</code> to the stream endpoint and using your CC key.
+          Note: the response format is SSE text-delta, not full OpenAI chunks, so use the raw streaming approach above for best compatibility.
+        </p>
+        <CodeBlock lang="python" code={`from openai import OpenAI
+
+client = OpenAI(
+    api_key="${key}",
+    base_url="${BASE}/api/",
+)
+
+# Non-streaming example (wraps internally)
+# For streaming, use the native fetch/httpx approach above.
+response = client.chat.completions.create(
+    model="zai-org/GLM-5",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=False,
+)`} />
+      </DocSection>
+
+      {/* Rate limits */}
+      <DocSection title="⏱ Rate Limits & Errors" defaultOpen={false}>
+        <div className="space-y-3">
+          <p className="text-xs text-white/50 leading-relaxed">
+            Each API key has a per-minute request limit (RPM). Exceeding it returns <code className="text-[#f97316] font-mono">HTTP 429</code> with a <code className="text-[#f97316] font-mono">Retry-After</code> header indicating seconds to wait.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-white/30 uppercase tracking-wider border-b border-white/[0.06]">
+                  <th className="text-left py-2 pr-4 font-medium">HTTP Status</th>
+                  <th className="text-left py-2 pr-4 font-medium">Meaning</th>
+                  <th className="text-left py-2 font-medium">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.04]">
+                {[
+                  ["200", "Success (streaming)", "Read SSE chunks"],
+                  ["400", "Bad request", "Check model ID and message format"],
+                  ["403", "Invalid / disabled key", "Verify API key in dashboard"],
+                  ["429", "Rate limit exceeded", "Wait Retry-After seconds"],
+                  ["503", "No keys in pool", "Contact support"],
+                ].map(([code, meaning, action]) => (
+                  <tr key={code} className="text-white/50">
+                    <td className="py-2 pr-4 font-mono">{code}</td>
+                    <td className="py-2 pr-4">{meaning}</td>
+                    <td className="py-2 text-white/30">{action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </DocSection>
+
+      {/* Response format */}
+      <DocSection title="📦 Response Format" defaultOpen={false}>
+        <p className="text-xs text-white/50 leading-relaxed">
+          Each SSE data line carries a JSON object. The only field you need is <code className="text-[#f97316] font-mono">text</code> — concatenate all deltas to build the full response.
+        </p>
+        <CodeBlock lang="json" code={`// Each streaming chunk:
+{ "type": "text-delta", "text": "Hello" }
+{ "type": "text-delta", "text": " world" }
+{ "type": "text-delta", "text": "!" }
+
+// End of stream marker:
+[DONE]
+
+// Error response (non-200):
+{ "error": "Rate limit exceeded — max 60 requests/minute for this key" }`} />
+      </DocSection>
+    </div>
+  );
+}
+
 // ── MAIN DASHBOARD ────────────────────────────────────────────────────────────
 const NAV = [
   { icon: Home, label: "Home", id: "home" },
@@ -697,6 +951,7 @@ const NAV = [
   { icon: FileText, label: "Usage Logs", id: "logs" },
   { icon: Key, label: "API Keys", id: "keys" },
   { icon: Cpu, label: "Models", id: "models" },
+  { icon: BookOpen, label: "Docs", id: "docs" },
   { icon: CreditCard, label: "Subscribe", id: "subscribe" },
   { icon: MessageSquare, label: "Online Chat", id: "chat" },
   { icon: Users, label: "Invite", id: "invite" },
@@ -784,6 +1039,7 @@ export default function UserDashboard() {
           {nav === "logs" && <UsageLogsPage />}
           {nav === "keys" && <ApiKeysPage keys={keys} loadingKeys={keysLoading} onRefresh={loadKeys} />}
           {nav === "models" && <ModelsPage />}
+          {nav === "docs" && <DocsPage apiKey={keys[0]?.key ?? ""} />}
           {nav === "subscribe" && <SubscribePage />}
           {nav === "invite" && <InvitePage userId={user?.id ?? "00000000"} />}
           {nav === "contact" && <ContactPage />}
