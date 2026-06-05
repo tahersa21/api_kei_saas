@@ -998,7 +998,7 @@ model_auto_compact_token_limit = 160000
 
 [model_providers.OpenAI]
 name = "OpenAI"
-base_url = "${base}/api/proxy/codex"
+base_url = "${base}/api/codex"
 wire_api = "responses"
 requires_openai_auth = true
 

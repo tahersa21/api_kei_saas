@@ -666,9 +666,13 @@ async function handleCodexResponses(req: import("express").Request, res: import(
   }
 }
 
-// Register both paths — Codex CLI omits /v1/ in some versions
-router.post("/proxy/codex/responses", handleCodexResponses);
+// All supported paths for Codex CLI (wire_api = "responses")
+// Short:  base_url = "<host>/api/codex"   → <base_url>/responses or <base_url>/v1/responses
+// Legacy: base_url = "<host>/api/proxy/codex"
+router.post("/proxy/codex/responses",    handleCodexResponses);
 router.post("/proxy/codex/v1/responses", handleCodexResponses);
+router.post("/codex/responses",          handleCodexResponses);
+router.post("/codex/v1/responses",       handleCodexResponses);
 
 router.post("/chat/stream", async (req, res) => {
   const headerKey = req.headers["x-api-key"] as string | undefined;
