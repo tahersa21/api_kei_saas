@@ -417,17 +417,25 @@ router.post("/proxy/claude/v1/messages", async (req, res) => {
   }
 
   try {
+    // Build forwarded headers: pass ALL original Claude Code headers transparently,
+    // only swap out the API key so right.codes accepts the request.
+    const forwardHeaders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (
+        k === "host" || k === "connection" || k === "transfer-encoding" ||
+        k === "content-length" || k === "x-api-key" || k === "authorization"
+      ) continue; // strip hop-by-hop + auth headers we'll replace
+      if (typeof v === "string") forwardHeaders[k] = v;
+      else if (Array.isArray(v)) forwardHeaders[k] = v.join(", ");
+    }
+    // Inject RC key as x-api-key (Anthropic format)
+    forwardHeaders["x-api-key"] = rcKey;
+    // Ensure content-type is set
+    if (!forwardHeaders["content-type"]) forwardHeaders["content-type"] = "application/json";
+
     const upstream = await fetch(`${RC_BASE}/claude/v1/messages`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": rcKey,
-        "anthropic-version": (req.headers["anthropic-version"] as string) || "2023-06-01",
-        "anthropic-beta": (req.headers["anthropic-beta"] as string) || "claudecode-2025-05-14,interleaved-thinking-2025-05-14",
-        "user-agent": "claude-code/2.1.148",
-        "x-claude-code-disable-nonessential-traffic": "1",
-        "x-app": "cli",
-      },
+      headers: forwardHeaders,
       body: JSON.stringify(req.body),
     });
 
@@ -498,12 +506,18 @@ router.post("/proxy/codex/v1/chat/completions", async (req, res) => {
   }
 
   try {
+    const fwdCodex: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (k === "host" || k === "connection" || k === "transfer-encoding" || k === "content-length" || k === "authorization" || k === "x-api-key") continue;
+      if (typeof v === "string") fwdCodex[k] = v;
+      else if (Array.isArray(v)) fwdCodex[k] = v.join(", ");
+    }
+    fwdCodex["authorization"] = `Bearer ${rcKey}`;
+    if (!fwdCodex["content-type"]) fwdCodex["content-type"] = "application/json";
+
     const upstream = await fetch(`${RC_BASE}/codex-pro/v1/chat/completions`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "authorization": `Bearer ${rcKey}`,
-      },
+      headers: fwdCodex,
       body: JSON.stringify(req.body),
     });
 
@@ -566,12 +580,18 @@ router.post("/proxy/codex/v1/responses", async (req, res) => {
   }
 
   try {
+    const fwdResp: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (k === "host" || k === "connection" || k === "transfer-encoding" || k === "content-length" || k === "authorization" || k === "x-api-key") continue;
+      if (typeof v === "string") fwdResp[k] = v;
+      else if (Array.isArray(v)) fwdResp[k] = v.join(", ");
+    }
+    fwdResp["authorization"] = `Bearer ${rcKey}`;
+    if (!fwdResp["content-type"]) fwdResp["content-type"] = "application/json";
+
     const upstream = await fetch(`${RC_BASE}/codex/v1/responses`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "authorization": `Bearer ${rcKey}`,
-      },
+      headers: fwdResp,
       body: JSON.stringify(req.body),
     });
 
