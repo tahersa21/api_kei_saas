@@ -23,6 +23,8 @@ import ProvidersPage from "@/pages/dashboard/providers";
 import LogsPage from "@/pages/dashboard/logs";
 import UsersPage from "@/pages/dashboard/users";
 import SettingsPage from "@/pages/dashboard/settings";
+import RoutingPage from "@/pages/dashboard/routing";
+import PlaygroundPage from "@/pages/dashboard/playground";
 import { useAdminAuth } from "@/context/admin-auth";
 
 const queryClient = new QueryClient();
@@ -233,6 +235,23 @@ function Router() {
             <DashboardLayout><SettingsPage /></DashboardLayout>
           </DashboardGuard>
         )}
+      </Route>
+      <Route path="/dashboard/routing">
+        {() => (
+          <DashboardGuard>
+            <DashboardLayout><RoutingPage /></DashboardLayout>
+          </DashboardGuard>
+        )}
+      </Route>
+      <Route path="/dashboard/playground">
+        {() => (
+          <DashboardGuard>
+            <DashboardLayout><PlaygroundPage /></DashboardLayout>
+          </DashboardGuard>
+        )}
+      </Route>
+      <Route path="/taherlt">
+        {() => <Redirect to="/dashboard" />}
       </Route>
       <Route component={NotFound} />
     </Switch>
