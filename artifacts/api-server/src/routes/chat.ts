@@ -321,6 +321,12 @@ async function handleCodexResponses(req: import("express").Request, res: import(
       res.status(401).json({ error: { message: "Invalid or inactive API key", type: "invalid_request_error", code: "invalid_api_key" } });
       return;
     }
+    const { checkUserRpm } = await import("../lib/user-rate-limiter.js");
+    if (!checkUserRpm(rows[0].id, rows[0].rpmLimit)) {
+      res.setHeader("Retry-After", "60");
+      res.status(429).json({ error: { message: `Rate limit exceeded — max ${rows[0].rpmLimit} req/min for this key`, type: "rate_limit_error", code: "rate_limit_exceeded" } });
+      return;
+    }
     userKeyId = rows[0].id;
     clerkUserId = rows[0].clerkUserId;
   }
