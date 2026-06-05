@@ -11,7 +11,6 @@ type LogEntry = {
   errorMsg: string | null;
   createdAt: string;
   userKeyLabel: string | null;
-  ccKeyLabel: string | null;
 };
 
 function formatMs(ms: number | null): string {
@@ -72,7 +71,6 @@ export default function LogsPage() {
                   <th className="text-left px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground font-normal">Status</th>
                   <th className="text-left px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground font-normal">Model</th>
                   <th className="text-left px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground font-normal">User Key</th>
-                  <th className="text-left px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground font-normal">CC Key</th>
                   <th className="text-right px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground font-normal">Duration</th>
                 </tr>
               </thead>
@@ -96,9 +94,6 @@ export default function LogsPage() {
                     </td>
                     <td className="px-3 py-2 text-[10px] text-muted-foreground font-sans">
                       {log.userKeyLabel ?? <span className="text-muted-foreground/30">—</span>}
-                    </td>
-                    <td className="px-3 py-2 text-[10px] text-muted-foreground font-sans">
-                      {log.ccKeyLabel ?? <span className="text-muted-foreground/30">—</span>}
                     </td>
                     <td className="px-3 py-2 text-[10px] text-muted-foreground text-right tabular-nums">
                       {formatMs(log.elapsedMs)}

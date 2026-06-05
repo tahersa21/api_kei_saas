@@ -5,14 +5,12 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import {
-  Key, Users, Activity, TrendingUp, Loader2, Zap,
-  Clock, CheckCircle2, RefreshCw, ArrowUp, ArrowDown, Server,
+  Users, Activity, TrendingUp, Loader2, Zap,
+  Clock, CheckCircle2, RefreshCw, ArrowUp, ArrowDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type Stats = {
-  ccKeys: { total: number; active: number };
-  rcKeys: { total: number; active: number };
   userKeys: { total: number; active: number };
   requests: { total: number; today: number; yesterday: number; week: number };
   successRate: number;
@@ -129,7 +127,7 @@ export default function DashboardOverview() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
         <StatCard icon={Activity} label="Today" value={stats.requests.today} color="text-primary"
           trend={<TrendBadge now={stats.requests.today} prev={stats.requests.yesterday} />}
           sub={`${stats.requests.yesterday} yesterday`} />
@@ -140,10 +138,6 @@ export default function DashboardOverview() {
           sub="of all requests" />
         <StatCard icon={Clock} label="Avg Response" value={formatMs(stats.avgResponseMs)} color="text-sky-400"
           sub="ok requests" />
-        <StatCard icon={Key} label="CC Keys" value={stats.ccKeys.active} color="text-emerald-400"
-          sub={`${stats.ccKeys.total} total`} />
-        <StatCard icon={Server} label="RC Keys" value={(stats.rcKeys?.active ?? 0)} color="text-violet-400"
-          sub={`${stats.rcKeys?.total ?? 0} total`} />
         <StatCard icon={Users} label="User Keys" value={stats.userKeys.active} color="text-blue-400"
           sub={`${stats.userKeys.total} total`} />
       </div>

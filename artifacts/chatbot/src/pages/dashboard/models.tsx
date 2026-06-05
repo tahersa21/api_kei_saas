@@ -324,9 +324,9 @@ export default function ModelsPage() {
   // Apply search filter (includes hidden models in admin)
   const allModels = models.map(m => ({
     ...m,
-    _name: (overrides[m.id]?.displayName || m.name).toLowerCase(),
-    _id: m.id.toLowerCase(),
-    _group: m.group.toLowerCase(),
+    _name: (overrides[m.id]?.displayName || m.name || "").toLowerCase(),
+    _id: (m.id || "").toLowerCase(),
+    _group: (m.group || "").toLowerCase(),
   }));
   const filtered = search.trim()
     ? allModels.filter(m =>
