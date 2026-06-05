@@ -315,7 +315,9 @@ async function handleCodexResponses(req: import("express").Request, res: import(
   // Resolve provider via Smart Routing
   const requestedModel = (req.body as { model?: string }).model || "codex";
   const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
+  req.log.info({ requestedModel, ruleName, bodyKeys: Object.keys(req.body ?? {}) }, "codex-responses: resolving route");
   const routeResult = await resolveRoute(ruleName);
+  req.log.info({ ok: routeResult.ok, reason: (routeResult as { reason?: string }).reason }, "codex-responses: route result");
 
   if (!routeResult.ok) {
     const msg = routeResult.reason === "all_rate_limited"
