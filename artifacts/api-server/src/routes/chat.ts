@@ -315,9 +315,7 @@ async function handleCodexResponses(req: import("express").Request, res: import(
   // Resolve provider via Smart Routing
   const requestedModel = (req.body as { model?: string }).model || "codex";
   const ruleName = isRoutingModel(requestedModel) ? extractRuleName(requestedModel) : requestedModel;
-  req.log.info({ requestedModel, ruleName, bodyKeys: Object.keys(req.body ?? {}) }, "codex-responses: resolving route");
   const routeResult = await resolveRoute(ruleName);
-  req.log.info({ ok: routeResult.ok, reason: (routeResult as { reason?: string }).reason }, "codex-responses: route result");
 
   if (!routeResult.ok) {
     const msg = routeResult.reason === "all_rate_limited"
@@ -343,8 +341,10 @@ async function handleCodexResponses(req: import("express").Request, res: import(
     fwdHeaders["authorization"] = `Bearer ${routeApiKey}`;
     if (!fwdHeaders["content-type"]) fwdHeaders["content-type"] = "application/json";
 
+    // Build upstream URL: avoid doubling /v1 if apiBaseUrl already ends with /v1
     const base = apiBaseUrl.replace(/\/$/, "");
-    const upstream = await fetch(`${base}/v1/responses`, {
+    const responsesUrl = base.endsWith("/v1") ? `${base}/responses` : `${base}/v1/responses`;
+    const upstream = await fetch(responsesUrl, {
       method: "POST",
       headers: fwdHeaders,
       body: JSON.stringify(req.body),
@@ -1099,7 +1099,8 @@ router.post("/v1/responses", async (req, res) => {
   let upstream: Response;
   try {
     const base = rUrl.replace(/\/$/, "");
-    upstream = await fetch(`${base}/v1/responses`, {
+    const responsesUrl = base.endsWith("/v1") ? `${base}/responses` : `${base}/v1/responses`;
+    upstream = await fetch(responsesUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${rKey}` },
       body: JSON.stringify(body),
