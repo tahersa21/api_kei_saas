@@ -31,7 +31,7 @@
     }
   },
   "userCredits": {
-    "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": 1200
+    "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": 1158
   },
   "creditTransactions": {
     "user_3Ej5kG8CtoYvsbF2YshuM6A7VES": [
@@ -52,6 +52,12 @@
         "delta": 1200,
         "note": "Admin grant",
         "createdAt": "2026-06-05T18:36:16.509Z"
+      },
+      {
+        "id": "1780702232550-xnmz6",
+        "delta": -42,
+        "note": "API usage: gpt-5.5 (12262in/14out tokens)",
+        "createdAt": "2026-06-05T23:30:32.550Z"
       }
     ]
   }
