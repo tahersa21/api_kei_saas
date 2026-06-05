@@ -25,6 +25,9 @@ type UserKey = {
 type Log = { id: string; model: string; status: string; elapsedMs: number | null; createdAt: string };
 type LogsResponse = { total: number; page: number; pageSize: number; logs: Log[] };
 type Range = "today" | "7d" | "30d";
+type KeyLimit = { id: string; label: string; isActive: boolean; rpmLimit: number; currentRpm: number };
+type RoutingRuleInfo = { name: string; description: string | null; modelId: string };
+type LimitsData = { keys: KeyLimit[]; routingRules: RoutingRuleInfo[] };
 
 const ANNOUNCEMENTS = [
   { date: "1 day ago", pinned: true, text: "Platform update: New CC models added including DeepSeek-V3 and Qwen 2.5-Max. Enjoy faster response times with optimised routing." },
@@ -167,6 +170,19 @@ function HomePage({ stats, keyCount, creditBalance, loading, range, onRange }: {
 function DashboardPage({ stats, creditBalance, loading, range, onRange }: { stats: Stats | null; creditBalance: number; loading: boolean; range: Range; onRange: (r: Range) => void }) {
   const val = (n: number) => loading ? "…" : String(n);
   const COLORS = ["#f97316", "#8b5cf6", "#06b6d4", "#22c55e", "#ec4899", "#eab308"];
+
+  const [limits, setLimits] = useState<LimitsData | null>(null);
+  const [limitsLoading, setLimitsLoading] = useState(true);
+
+  const loadLimits = useCallback(async () => {
+    setLimitsLoading(true);
+    const data = await apiFetch<LimitsData>("/api/user/limits");
+    setLimits(data);
+    setLimitsLoading(false);
+  }, []);
+
+  useEffect(() => { loadLimits(); }, [loadLimits]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -179,23 +195,65 @@ function DashboardPage({ stats, creditBalance, loading, range, onRange }: { stat
         <StatCard dot="bg-blue-400" label="Total Tokens" value="0" />
         <StatCard dot="bg-red-400" label="Total Requests" value={val(stats?.rangeRequests ?? 0)} />
       </div>
+
+      {/* ── Per-key RPM Limits ───────────────────────────────────────────────── */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-white mb-4">Rate Limits</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {["/claude", "/codex-pro", "/deepseek", "/gemini"].map(prefix => (
-            <div key={prefix} className="bg-white/[0.03] border border-white/[0.06] rounded-lg p-4 space-y-2">
-              <p className="text-sm font-mono text-white font-medium">{prefix}</p>
-              <p className="text-xs text-white/40">Channel</p>
-              <div className="space-y-1.5 text-xs text-white/50">
-                <div className="flex justify-between"><span>RPM</span><span>0 / 400</span></div>
-                <div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-[#f97316] w-0 rounded-full" /></div>
-                <div className="flex justify-between"><span>Concurrency</span><span>0 / 200</span></div>
-                <div className="h-1 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-blue-500 w-0 rounded-full" /></div>
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-white">Your API Key Rate Limits</h3>
+          <button onClick={loadLimits} disabled={limitsLoading} className="p-1 text-white/30 hover:text-white transition-colors">
+            <RefreshCw className={`w-3.5 h-3.5 ${limitsLoading ? "animate-spin" : ""}`} />
+          </button>
         </div>
+        {limitsLoading ? (
+          <p className="text-xs text-white/30">Loading…</p>
+        ) : !limits || limits.keys.length === 0 ? (
+          <p className="text-xs text-white/30">No API keys found. Create one in the API Keys tab.</p>
+        ) : (
+          <div className="space-y-3">
+            {limits.keys.map(k => {
+              const pct = k.rpmLimit > 0 ? Math.min(100, Math.round((k.currentRpm / k.rpmLimit) * 100)) : 0;
+              const color = pct >= 90 ? "bg-red-500" : pct >= 60 ? "bg-yellow-500" : "bg-[#f97316]";
+              return (
+                <div key={k.id} className={`bg-white/[0.03] border rounded-lg p-4 space-y-2.5 ${k.isActive ? "border-white/[0.06]" : "border-white/[0.03] opacity-50"}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-1.5 h-1.5 rounded-full ${k.isActive ? "bg-green-400" : "bg-white/20"}`} />
+                      <p className="text-xs font-medium text-white">{k.label}</p>
+                      {!k.isActive && <span className="text-[10px] text-white/30">(disabled)</span>}
+                    </div>
+                    <span className="text-xs font-mono text-white/50">
+                      <span className={pct >= 90 ? "text-red-400" : pct >= 60 ? "text-yellow-400" : "text-white/70"}>{k.currentRpm}</span>
+                      <span className="text-white/30"> / {k.rpmLimit} rpm</span>
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      {/* ── Available Routing Rules ──────────────────────────────────────────── */}
+      {limits && limits.routingRules.length > 0 && (
+        <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-white mb-3">Available Routing Rules</h3>
+          <p className="text-xs text-white/40 mb-4">Use these model IDs to route requests through preconfigured provider chains.</p>
+          <div className="space-y-2">
+            {limits.routingRules.map(r => (
+              <div key={r.name} className="flex items-start justify-between gap-3 bg-white/[0.03] border border-white/[0.06] rounded-lg px-4 py-3">
+                <div className="min-w-0">
+                  <code className="text-xs font-mono text-[#f97316]">{r.modelId}</code>
+                  {r.description && <p className="text-[11px] text-white/40 mt-0.5">{r.description}</p>}
+                </div>
+                <CopyBtn text={r.modelId} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-5">
           <h3 className="text-sm font-semibold text-white mb-4">Token Distribution</h3>
@@ -971,6 +1029,11 @@ function DocsPage({ apiKey }: { apiKey: string }) {
   const modelsUrl = `${BASE}/api/chat/models`;
   const rcModelsUrl = `${BASE}/api/chat/rc-models`;
 
+  const [limitsData, setLimitsData] = useState<LimitsData | null>(null);
+  useEffect(() => {
+    apiFetch<LimitsData>("/api/user/limits").then(d => setLimitsData(d));
+  }, []);
+
   return (
     <div className="space-y-5 max-w-3xl">
       <div>
@@ -1025,6 +1088,7 @@ function DocsPage({ apiKey }: { apiKey: string }) {
             { prefix: "zai-org/GLM-5", desc: "CommandCode (CC) models — use the model ID directly", color: "text-blue-400", example: `"model": "zai-org/GLM-5"` },
             { prefix: "rc:/channel|model", desc: "RightCode (RC) models — channel + model name", color: "text-purple-400", example: `"model": "rc:/codex-pro|gpt-5.4"` },
             { prefix: "ag:model-id", desc: "AiGoCode (AG) models — prefix with ag:", color: "text-green-400", example: `"model": "ag:gpt-4o"` },
+            { prefix: "route:rule-name", desc: "Routing Rules — auto-selects best provider based on configured chain", color: "text-[#f97316]", example: `"model": "route:my-rule"` },
           ].map(row => (
             <div key={row.prefix} className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3 space-y-1.5">
               <div className="flex items-center gap-2 flex-wrap">
@@ -1039,6 +1103,30 @@ function DocsPage({ apiKey }: { apiKey: string }) {
           Browse available models via <code className="text-[#f97316] font-mono">GET {modelsUrl}</code> (CC) or <code className="text-[#f97316] font-mono">GET {rcModelsUrl}</code> (RC).
         </p>
       </DocSection>
+
+      {/* Active Routing Rules */}
+      {limitsData && limitsData.routingRules.length > 0 && (
+        <DocSection title="🔀 Active Routing Rules">
+          <p className="text-xs text-white/50 leading-relaxed">
+            These routing rules are currently active on your account. Use the <code className="text-[#f97316] font-mono">route:</code> model ID to let the system automatically pick the best available provider.
+          </p>
+          <div className="space-y-3">
+            {limitsData.routingRules.map(r => (
+              <div key={r.name} className="bg-black/30 border border-white/[0.06] rounded-lg px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <code className="text-xs font-mono text-[#f97316]">{r.modelId}</code>
+                  <CopyBtn text={r.modelId} />
+                </div>
+                {r.description && <p className="text-xs text-white/40">{r.description}</p>}
+                <CodeBlock lang="bash" code={`curl ${streamUrl} \\
+  -H "X-Api-Key: ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "${r.modelId}", "messages": [{"role": "user", "content": "Hello!"}], "stream": true}'`} />
+              </div>
+            ))}
+          </div>
+        </DocSection>
+      )}
 
       {/* Streaming Example */}
       <DocSection title="⚡ Streaming (SSE)">

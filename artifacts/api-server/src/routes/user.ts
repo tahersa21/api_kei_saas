@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { randomBytes } from "crypto";
 import { getAuth } from "@clerk/express";
-import { db, userKeysTable, requestLogsTable } from "@workspace/db";
+import { db, userKeysTable, requestLogsTable, routingRulesTable } from "@workspace/db";
 import { eq, desc, count, sql, and, gte, lte, like, inArray } from "drizzle-orm";
 import { getUserCredit, getUserTransactions } from "../lib/settings";
 
@@ -176,6 +176,42 @@ router.get("/user/credits", (req, res) => {
     balance: getUserCredit(userId),
     transactions: getUserTransactions(userId).slice(0, 10),
   });
+});
+
+// ── GET /api/user/limits ──────────────────────────────────────────────────────
+// Returns per-key RPM limits + current usage + active routing rules (with model IDs)
+router.get("/user/limits", async (req, res) => {
+  const userId = requireClerkUser(req, res);
+  if (!userId) return;
+
+  const { getUserRpmUsage } = await import("../lib/user-rate-limiter.js");
+
+  const keys = await db
+    .select({ id: userKeysTable.id, label: userKeysTable.label, rpmLimit: userKeysTable.rpmLimit, isActive: userKeysTable.isActive })
+    .from(userKeysTable)
+    .where(eq(userKeysTable.clerkUserId, userId))
+    .orderBy(desc(userKeysTable.createdAt));
+
+  const keyLimits = keys.map(k => ({
+    id: k.id,
+    label: k.label,
+    isActive: k.isActive,
+    rpmLimit: k.rpmLimit,
+    currentRpm: getUserRpmUsage(k.id),
+  }));
+
+  const rules = await db
+    .select({ id: routingRulesTable.id, name: routingRulesTable.name, description: routingRulesTable.description })
+    .from(routingRulesTable)
+    .where(eq(routingRulesTable.isActive, true));
+
+  const routingRules = rules.map(r => ({
+    name: r.name,
+    description: r.description,
+    modelId: `route:${r.name}`,
+  }));
+
+  res.json({ keys: keyLimits, routingRules });
 });
 
 export default router;
