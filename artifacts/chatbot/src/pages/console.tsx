@@ -762,6 +762,87 @@ function ApiKeysPanel({ isAdmin }: { isAdmin: boolean }) {
 }
 
 
+// ─── Custom Provider Key Panel ────────────────────────────────────────────────
+
+function CustomProviderKeyPanel({ provider }: { provider: CustomProvider }) {
+  const storageKey = `provider_key_${provider.slug}`;
+  const [key, setKey] = useState(() => localStorage.getItem(storageKey) ?? "");
+  const [input, setInput] = useState(key);
+  const [show, setShow] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const save = () => {
+    const val = input.trim();
+    if (val) localStorage.setItem(storageKey, val);
+    else localStorage.removeItem(storageKey);
+    setKey(val);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const clear = () => {
+    localStorage.removeItem(storageKey);
+    setKey("");
+    setInput("");
+  };
+
+  return (
+    <div className="p-6 space-y-5 max-w-xl">
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Key className="w-4 h-4 text-primary" />
+        <h2 className="font-bold text-sm">{provider.name} — API Key</h2>
+        {key && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-sans">مُفعَّل</span>}
+      </div>
+      <p className="text-xs text-muted-foreground font-sans leading-relaxed">
+        المفتاح يُخزَّن محلياً في المتصفح ويُرسَل مع كل طلب لهذا المزود.
+        <br />
+        <span className="text-muted-foreground/60">Base URL: <code className="font-mono">{provider.baseUrl}</code></span>
+      </p>
+
+      {/* Key input */}
+      <div className="space-y-2">
+        <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">API Key</label>
+        <div className="flex gap-2">
+          <div className="flex-1 relative">
+            <Input
+              type={show ? "text" : "password"}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && save()}
+              placeholder="sk-…"
+              className="h-8 text-xs font-mono pr-8"
+            />
+            <button onClick={() => setShow(s => !s)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-foreground">
+              {show ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+          <Button onClick={save} size="sm" className="h-8 text-xs px-3">
+            {saved ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : "حفظ"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Current stored key */}
+      {key && (
+        <div className="flex items-center justify-between bg-muted/20 border border-border/40 rounded px-3 py-2">
+          <div>
+            <p className="text-[10px] text-muted-foreground font-sans mb-0.5">المفتاح المحفوظ</p>
+            <code className="text-[11px] font-mono">
+              {key.slice(0, 8)}{"•".repeat(Math.min(16, key.length - 8))}
+            </code>
+          </div>
+          <button onClick={clear}
+            className="p-1.5 rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Test Chat Panel ──────────────────────────────────────────────────────────
 
 function TestChatPanel() {
